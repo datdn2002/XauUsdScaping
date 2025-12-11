@@ -1,4 +1,5 @@
 from indicators import calculate_rsi, calculate_ema, calculate_sma
+from telegram_bot import log
 import math
 
 class Signal:
@@ -100,28 +101,28 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
                 for lvl in [0.236, 0.382, 1.0]:
                     if abs(current_price - fib_levels[lvl]) <= fib_tol:
                         signal.buy_score += 2
-                        signal.details.append(f"F1: Fib M15 uptrend {lvl} → Buy +2")
+                        signal.details.append(f"F1: Fib M15 uptrend {lvl} -> Buy +2")
                 for lvl in [0.618, 0.786]:
                     if abs(current_price - fib_levels[lvl]) <= fib_tol:
                         signal.buy_score += 2
-                        signal.details.append(f"F1: Fib M15 uptrend {lvl} → Buy +2")
+                        signal.details.append(f"F1: Fib M15 uptrend {lvl} -> Buy +2")
                 for lvl in [1.618, 2.618]:
                     if current_price >= fib_levels[lvl] - fib_tol:
                         signal.buy_score += 4
-                        signal.details.append(f"F1: Fib M15 uptrend ext {lvl} → Buy +4")
+                        signal.details.append(f"F1: Fib M15 uptrend ext {lvl} -> Buy +4")
                 # Uptrend Sell
                 for lvl in [0.236, 0.382, 1.0]:
                     if abs(current_price - fib_levels[lvl]) <= fib_tol:
                         signal.sell_score += 2
-                        signal.details.append(f"F1: Fib M15 uptrend {lvl} → Sell +2")
+                        signal.details.append(f"F1: Fib M15 uptrend {lvl} -> Sell +2")
                 for lvl in [0.618, 0.786]:
                     if abs(current_price - fib_levels[lvl]) <= fib_tol:
                         signal.sell_score += 3
-                        signal.details.append(f"F1: Fib M15 uptrend {lvl} → Sell +3")
+                        signal.details.append(f"F1: Fib M15 uptrend {lvl} -> Sell +3")
                 for lvl in [1.618, 2.618]:
                     if current_price >= fib_levels[lvl] - fib_tol:
                         signal.sell_score += 5
-                        signal.details.append(f"F1: Fib M15 uptrend ext {lvl} → Sell +5")
+                        signal.details.append(f"F1: Fib M15 uptrend ext {lvl} -> Sell +5")
             
             elif trending_down:
                 A = window_high
@@ -140,28 +141,28 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
                 for lvl in [0.236, 0.382, 1.0]:
                     if abs(current_price - fib_levels[lvl]) <= fib_tol:
                         signal.buy_score += 2
-                        signal.details.append(f"F1: Fib M15 downtrend {lvl} → Buy +2")
+                        signal.details.append(f"F1: Fib M15 downtrend {lvl} -> Buy +2")
                 for lvl in [0.618, 0.786]:
                     if abs(current_price - fib_levels[lvl]) <= fib_tol:
                         signal.buy_score += 3
-                        signal.details.append(f"F1: Fib M15 downtrend {lvl} → Buy +3")
+                        signal.details.append(f"F1: Fib M15 downtrend {lvl} -> Buy +3")
                 for lvl in [1.618, 2.618]:
                     if current_price <= fib_levels[lvl] + fib_tol:
                         signal.buy_score += 5
-                        signal.details.append(f"F1: Fib M15 downtrend ext {lvl} → Buy +5")
+                        signal.details.append(f"F1: Fib M15 downtrend ext {lvl} -> Buy +5")
                 # Downtrend Sell
                 for lvl in [0.236, 0.382, 1.0]:
                     if abs(current_price - fib_levels[lvl]) <= fib_tol:
                         signal.sell_score += 2
-                        signal.details.append(f"F1: Fib M15 downtrend {lvl} → Sell +2")
+                        signal.details.append(f"F1: Fib M15 downtrend {lvl} -> Sell +2")
                 for lvl in [0.618, 0.786]:
                     if abs(current_price - fib_levels[lvl]) <= fib_tol:
                         signal.sell_score += 2
-                        signal.details.append(f"F1: Fib M15 downtrend {lvl} → Sell +2")
+                        signal.details.append(f"F1: Fib M15 downtrend {lvl} -> Sell +2")
                 for lvl in [1.618, 2.618]:
                     if current_price <= fib_levels[lvl] + fib_tol:
                         signal.sell_score += 4
-                        signal.details.append(f"F1: Fib M15 downtrend ext {lvl} → Sell +4")
+                        signal.details.append(f"F1: Fib M15 downtrend ext {lvl} -> Sell +4")
     
     # ========== FACTOR 2: Fibonacci H4 ==========
     if len_h4 >= 100:
@@ -204,28 +205,28 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
                 for lvl in [0.236, 0.382, 1.0]:
                     if abs(current_price - fib_levels[lvl]) <= fib_tol:
                         signal.buy_score += 5
-                        signal.details.append(f"F2: Fib H4 uptrend {lvl} → Buy +5")
+                        signal.details.append(f"F2: Fib H4 uptrend {lvl} -> Buy +5")
                 for lvl in [0.618, 0.786]:
                     if abs(current_price - fib_levels[lvl]) <= fib_tol:
                         signal.buy_score += 7
-                        signal.details.append(f"F2: Fib H4 uptrend {lvl} → Buy +7")
+                        signal.details.append(f"F2: Fib H4 uptrend {lvl} -> Buy +7")
                 for lvl in [1.618, 2.618]:
                     if current_price >= fib_levels[lvl] - fib_tol:
                         signal.buy_score += 9
-                        signal.details.append(f"F2: Fib H4 uptrend ext {lvl} → Buy +9")
+                        signal.details.append(f"F2: Fib H4 uptrend ext {lvl} -> Buy +9")
                 # Uptrend Sell
                 for lvl in [0.236, 0.382, 1.0]:
                     if abs(current_price - fib_levels[lvl]) <= fib_tol:
                         signal.sell_score += 7
-                        signal.details.append(f"F2: Fib H4 uptrend {lvl} → Sell +7")
+                        signal.details.append(f"F2: Fib H4 uptrend {lvl} -> Sell +7")
                 for lvl in [0.618, 0.786]:
                     if abs(current_price - fib_levels[lvl]) <= fib_tol:
                         signal.sell_score += 9
-                        signal.details.append(f"F2: Fib H4 uptrend {lvl} → Sell +9")
+                        signal.details.append(f"F2: Fib H4 uptrend {lvl} -> Sell +9")
                 for lvl in [1.618, 2.618]:
                     if current_price >= fib_levels[lvl] - fib_tol:
                         signal.sell_score += 15
-                        signal.details.append(f"F2: Fib H4 uptrend ext {lvl} → Sell +15")
+                        signal.details.append(f"F2: Fib H4 uptrend ext {lvl} -> Sell +15")
             
             elif trending_down:
                 A = window_high
@@ -243,28 +244,28 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
                 for lvl in [0.236, 0.382, 1.0]:
                     if abs(current_price - fib_levels[lvl]) <= fib_tol:
                         signal.buy_score += 7
-                        signal.details.append(f"F2: Fib H4 downtrend {lvl} → Buy +7")
+                        signal.details.append(f"F2: Fib H4 downtrend {lvl} -> Buy +7")
                 for lvl in [0.618, 0.786]:
                     if abs(current_price - fib_levels[lvl]) <= fib_tol:
                         signal.buy_score += 9
-                        signal.details.append(f"F2: Fib H4 downtrend {lvl} → Buy +9")
+                        signal.details.append(f"F2: Fib H4 downtrend {lvl} -> Buy +9")
                 for lvl in [1.618, 2.618]:
                     if current_price <= fib_levels[lvl] + fib_tol:
                         signal.buy_score += 15
-                        signal.details.append(f"F2: Fib H4 downtrend ext {lvl} → Buy +15")
+                        signal.details.append(f"F2: Fib H4 downtrend ext {lvl} -> Buy +15")
                 # Downtrend Sell
                 for lvl in [0.236, 0.382, 1.0]:
                     if abs(current_price - fib_levels[lvl]) <= fib_tol:
                         signal.sell_score += 5
-                        signal.details.append(f"F2: Fib H4 downtrend {lvl} → Sell +5")
+                        signal.details.append(f"F2: Fib H4 downtrend {lvl} -> Sell +5")
                 for lvl in [0.618, 0.786]:
                     if abs(current_price - fib_levels[lvl]) <= fib_tol:
                         signal.sell_score += 7
-                        signal.details.append(f"F2: Fib H4 downtrend {lvl} → Sell +7")
+                        signal.details.append(f"F2: Fib H4 downtrend {lvl} -> Sell +7")
                 for lvl in [1.618, 2.618]:
                     if current_price <= fib_levels[lvl] + fib_tol:
                         signal.sell_score += 9
-                        signal.details.append(f"F2: Fib H4 downtrend ext {lvl} → Sell +9")
+                        signal.details.append(f"F2: Fib H4 downtrend ext {lvl} -> Sell +9")
     
     # ========== FACTOR 3: RSI(14) M15 ==========
     if len_m15 >= 15 and RSI[i] is not None:
@@ -273,7 +274,7 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
         # RSI < 30 (quá bán)
         if rsi_val < 30:
             signal.buy_score += 5
-            signal.details.append(f"F3: RSI={rsi_val:.1f} < 30 → Buy +5")
+            signal.details.append(f"F3: RSI={rsi_val:.1f} < 30 -> Buy +5")
             
             # 2 đáy RSI
             if i >= 6:
@@ -290,17 +291,17 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
                 
                 if first_low and second_low and second_low['idx'] > first_low['idx'] and second_low['value'] < first_low['value']:
                     signal.buy_score += 7
-                    signal.details.append("F3: RSI 2-bottom → Buy +7")
+                    signal.details.append("F3: RSI 2-bottom -> Buy +7")
             
             # RSI < 20 trong 2 nến
             if i >= 1 and RSI[i] < 20 and RSI[i - 1] is not None and RSI[i - 1] < 20:
                 signal.buy_score += 10
-                signal.details.append("F3: RSI < 20 for 2 candles → Buy +10")
+                signal.details.append("F3: RSI < 20 for 2 candles -> Buy +10")
         
         # RSI > 70 (quá mua)
         if rsi_val > 70:
             signal.sell_score += 3
-            signal.details.append(f"F3: RSI={rsi_val:.1f} > 70 → Sell +3")
+            signal.details.append(f"F3: RSI={rsi_val:.1f} > 70 -> Sell +3")
             
             # 2 đỉnh RSI
             if i >= 6:
@@ -317,12 +318,12 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
                 
                 if first_high and second_high and second_high['idx'] > first_high['idx'] and second_high['value'] > first_high['value']:
                     signal.sell_score += 5
-                    signal.details.append("F3: RSI 2-top → Sell +5")
+                    signal.details.append("F3: RSI 2-top -> Sell +5")
             
             # RSI > 80 trong 2 nến
             if i >= 1 and RSI[i] > 80 and RSI[i - 1] is not None and RSI[i - 1] > 80:
                 signal.sell_score += 10
-                signal.details.append("F3: RSI > 80 for 2 candles → Sell +10")
+                signal.details.append("F3: RSI > 80 for 2 candles -> Sell +10")
     
     # ========== FACTOR 4: Cản tĩnh ngang 100 nến M15 ==========
     if len_m15 >= 100:
@@ -333,10 +334,10 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
         
         if abs(current_price - min_close) <= tol:
             signal.buy_score += 5
-            signal.details.append("F4: Price at M15 100-low → Buy +5")
+            signal.details.append("F4: Price at M15 100-low -> Buy +5")
         if abs(current_price - max_close) <= tol:
             signal.sell_score += 5
-            signal.details.append("F4: Price at M15 100-high → Sell +5")
+            signal.details.append("F4: Price at M15 100-high -> Sell +5")
     
     # ========== FACTOR 5: Cản tĩnh ngang 100 nến H4 ==========
     if len_h4 >= 100:
@@ -347,10 +348,10 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
         
         if abs(current_price - min_close) <= tol:
             signal.buy_score += 8
-            signal.details.append("F5: Price at H4 100-low → Buy +8")
+            signal.details.append("F5: Price at H4 100-low -> Buy +8")
         if abs(current_price - max_close) <= tol:
             signal.sell_score += 8
-            signal.details.append("F5: Price at H4 100-high → Sell +8")
+            signal.details.append("F5: Price at H4 100-high -> Sell +8")
     
     # ========== FACTOR 6: Cản tĩnh ngang 600 nến H4 ==========
     if len_h4 >= 600:
@@ -361,10 +362,10 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
         
         if abs(current_price - min_close) <= tol:
             signal.buy_score += 15
-            signal.details.append("F6: Price at H4 600-low → Buy +15")
+            signal.details.append("F6: Price at H4 600-low -> Buy +15")
         if abs(current_price - max_close) <= tol:
             signal.sell_score += 15
-            signal.details.append("F6: Price at H4 600-high → Sell +15")
+            signal.details.append("F6: Price at H4 600-high -> Sell +15")
     
     # ========== FACTOR 7: Phiên Á, Âu, Mỹ ==========
     if len_m15 >= 192:
@@ -389,31 +390,31 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
         if current_price >= asia_high:
             signal.buy_score += 5
             signal.sell_score += 3
-            signal.details.append("F7: Price >= Asia high → Buy +5, Sell +3")
+            signal.details.append("F7: Price >= Asia high -> Buy +5, Sell +3")
         if current_price <= asia_low:
             signal.buy_score += 3
             signal.sell_score += 5
-            signal.details.append("F7: Price <= Asia low → Buy +3, Sell +5")
+            signal.details.append("F7: Price <= Asia low -> Buy +3, Sell +5")
         
         # Europe
         if current_price >= euro_high:
             signal.buy_score += 7
             signal.sell_score += 5
-            signal.details.append("F7: Price >= Euro high → Buy +7, Sell +5")
+            signal.details.append("F7: Price >= Euro high -> Buy +7, Sell +5")
         if current_price <= euro_low:
             signal.buy_score += 5
             signal.sell_score += 7
-            signal.details.append("F7: Price <= Euro low → Buy +5, Sell +7")
+            signal.details.append("F7: Price <= Euro low -> Buy +5, Sell +7")
         
         # US
         if current_price >= us_high:
             signal.buy_score += 9
             signal.sell_score += 7
-            signal.details.append("F7: Price >= US high → Buy +9, Sell +7")
+            signal.details.append("F7: Price >= US high -> Buy +9, Sell +7")
         if current_price <= us_low:
             signal.buy_score += 7
             signal.sell_score += 9
-            signal.details.append("F7: Price <= US low → Buy +7, Sell +9")
+            signal.details.append("F7: Price <= US low -> Buy +7, Sell +9")
     
     # ========== FACTOR 8: Kênh giá 200 nến M30 ==========
     if len_m30 >= 200:
@@ -459,19 +460,19 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
         if current_price <= bottom_line + tol:
             if channel_type == "uptrend":
                 signal.buy_score += 10
-                signal.details.append("F8: Channel uptrend lower → Buy +10")
+                signal.details.append("F8: Channel uptrend lower -> Buy +10")
             else:
                 signal.buy_score += 5
-                signal.details.append(f"F8: Channel {channel_type} lower → Buy +5")
+                signal.details.append(f"F8: Channel {channel_type} lower -> Buy +5")
         
         # Chạm biên trên
         if current_price >= top_line - tol:
             if channel_type == "downtrend":
                 signal.sell_score += 10
-                signal.details.append("F8: Channel downtrend upper → Sell +10")
+                signal.details.append("F8: Channel downtrend upper -> Sell +10")
             else:
                 signal.sell_score += 5
-                signal.details.append(f"F8: Channel {channel_type} upper → Sell +5")
+                signal.details.append(f"F8: Channel {channel_type} upper -> Sell +5")
     
     # ========== FACTOR 9: Tam giác giảm (break up) ==========
     if len_m30 >= 100:
@@ -497,14 +498,14 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
             if abs(current_price - bottom_line) <= tol:
                 if is_first_half:
                     signal.buy_score += 4
-                    signal.details.append("F9: Triangle down, first half → Buy +4")
+                    signal.details.append("F9: Triangle down, first half -> Buy +4")
                 else:
                     signal.buy_score += 7
-                    signal.details.append("F9: Triangle down, second half → Buy +7")
+                    signal.details.append("F9: Triangle down, second half -> Buy +7")
             
             if abs(current_price - top_line_current) <= tol and is_first_half:
                 signal.sell_score += 2
-                signal.details.append("F9: Triangle down, top first half → Sell +2")
+                signal.details.append("F9: Triangle down, top first half -> Sell +2")
             
             # Breakout + retest
             if len_m30 >= 2:
@@ -512,7 +513,7 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
                 if prev_close < top_line_current and current_price > top_line_current:
                     if lows_m30[-1] <= top_line_current + tol:
                         signal.buy_score += 9
-                        signal.details.append("F9: Triangle breakout + retest → Buy +9")
+                        signal.details.append("F9: Triangle breakout + retest -> Buy +9")
     
     # ========== FACTOR 10: Tam giác tăng (break down) ==========
     if len_m30 >= 100:
@@ -538,14 +539,14 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
             if abs(current_price - top_line) <= tol:
                 if is_first_half:
                     signal.sell_score += 4
-                    signal.details.append("F10: Triangle up, first half → Sell +4")
+                    signal.details.append("F10: Triangle up, first half -> Sell +4")
                 else:
                     signal.sell_score += 7
-                    signal.details.append("F10: Triangle up, second half → Sell +7")
+                    signal.details.append("F10: Triangle up, second half -> Sell +7")
             
             if abs(current_price - bottom_line_current) <= tol and is_first_half:
                 signal.buy_score += 2
-                signal.details.append("F10: Triangle up, bottom first half → Buy +2")
+                signal.details.append("F10: Triangle up, bottom first half -> Buy +2")
             
             # Breakdown + retest
             if len_m30 >= 2:
@@ -553,7 +554,7 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
                 if prev_close > bottom_line_current and current_price < bottom_line_current:
                     if highs_m30[-1] >= bottom_line_current - tol:
                         signal.sell_score += 9
-                        signal.details.append("F10: Triangle breakdown + retest → Sell +9")
+                        signal.details.append("F10: Triangle breakdown + retest -> Sell +9")
     
     # ========== FACTOR 11: EMA9 cắt EMA21 (M15) ==========
     if len_m15 >= 22 and i >= 1:
@@ -563,10 +564,10 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
             
             if prev_diff < 0 and curr_diff > 0:
                 signal.buy_score += 7
-                signal.details.append("F11: EMA9 cross up EMA21 (M15) → Buy +7")
+                signal.details.append("F11: EMA9 cross up EMA21 (M15) -> Buy +7")
             if prev_diff > 0 and curr_diff < 0:
                 signal.sell_score += 7
-                signal.details.append("F11: EMA9 cross down EMA21 (M15) → Sell +7")
+                signal.details.append("F11: EMA9 cross down EMA21 (M15) -> Sell +7")
     
     # ========== FACTOR 12: EMA21 cắt EMA50 (H4) ==========
     if len_h4 >= 51:
@@ -574,10 +575,10 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
         if h4_idx >= 1 and EMA21_H4[h4_idx-1] is not None and EMA50_H4[h4_idx-1] is not None:
             if EMA21_H4[h4_idx - 1] < EMA50_H4[h4_idx - 1] and EMA21_H4[h4_idx] > EMA50_H4[h4_idx]:
                 signal.buy_score += 5
-                signal.details.append("F12: EMA21 cross up EMA50 (H4) → Buy +5")
+                signal.details.append("F12: EMA21 cross up EMA50 (H4) -> Buy +5")
             if EMA21_H4[h4_idx - 1] > EMA50_H4[h4_idx - 1] and EMA21_H4[h4_idx] < EMA50_H4[h4_idx]:
                 signal.sell_score += 5
-                signal.details.append("F12: EMA21 cross down EMA50 (H4) → Sell +5")
+                signal.details.append("F12: EMA21 cross down EMA50 (H4) -> Sell +5")
     
     # ========== FACTOR 13: EMA100 H1 (giá > EMA100 trong 3 nến & > 10 điểm) ==========
     if len_h1 >= 103:
@@ -596,10 +597,10 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
             
             if above_3_candles and diff >= 1.0:  # > 10 points = 1.0 USD
                 signal.buy_score += 5
-                signal.details.append(f"F13: Price > EMA100(H1) 3 candles, diff={diff:.1f} → Buy +5")
+                signal.details.append(f"F13: Price > EMA100(H1) 3 candles, diff={diff:.1f} -> Buy +5")
             elif below_3_candles and diff >= 1.0:
                 signal.sell_score += 5
-                signal.details.append(f"F13: Price < EMA100(H1) 3 candles, diff={diff:.1f} → Sell +5")
+                signal.details.append(f"F13: Price < EMA100(H1) 3 candles, diff={diff:.1f} -> Sell +5")
     
     # ========== FACTOR 14: SMA25 H4 (khoảng cách) ==========
     if len_h4 >= 25:
@@ -610,31 +611,31 @@ def evaluate_signals(symbol, rates_m15, rates_h4, rates_h1, rates_m30, verbose=T
             if diff < 0:  # Giá dưới SMA25
                 if abs(diff) >= 10:  # >= 100 pips = 10 USD
                     signal.buy_score += 10
-                    signal.details.append(f"F14: Price below SMA25(H4) {abs(diff):.1f}$ → Buy +10")
+                    signal.details.append(f"F14: Price below SMA25(H4) {abs(diff):.1f}$ -> Buy +10")
                 elif abs(diff) >= 6:  # >= 60 pips
                     signal.buy_score += 5
-                    signal.details.append(f"F14: Price below SMA25(H4) {abs(diff):.1f}$ → Buy +5")
+                    signal.details.append(f"F14: Price below SMA25(H4) {abs(diff):.1f}$ -> Buy +5")
             else:  # Giá trên SMA25
                 if diff >= 10:
                     signal.sell_score += 10
-                    signal.details.append(f"F14: Price above SMA25(H4) {diff:.1f}$ → Sell +10")
+                    signal.details.append(f"F14: Price above SMA25(H4) {diff:.1f}$ -> Sell +10")
                 elif diff >= 6:
                     signal.sell_score += 5
-                    signal.details.append(f"F14: Price above SMA25(H4) {diff:.1f}$ → Sell +5")
+                    signal.details.append(f"F14: Price above SMA25(H4) {diff:.1f}$ -> Sell +5")
     
     # ========== FACTOR 15: Manual Bias ==========
     if MANUAL_BIAS > 0:
         signal.buy_score += min(MANUAL_BIAS, 10)
-        signal.details.append(f"F15: Manual bias → Buy +{min(MANUAL_BIAS, 10)}")
+        signal.details.append(f"F15: Manual bias -> Buy +{min(MANUAL_BIAS, 10)}")
     elif MANUAL_BIAS < 0:
         signal.sell_score += min(abs(MANUAL_BIAS), 10)
-        signal.details.append(f"F15: Manual bias → Sell +{min(abs(MANUAL_BIAS), 10)}")
+        signal.details.append(f"F15: Manual bias -> Sell +{min(abs(MANUAL_BIAS), 10)}")
     
     # In chi tiết nếu có điểm
     if verbose and signal.details:
-        print("  [Chi tiết điểm]:")
+        log("  [Score details]:")
         for detail in signal.details:
-            print(f"    - {detail}")
+            log(f"    - {detail}")
     
     return signal
 

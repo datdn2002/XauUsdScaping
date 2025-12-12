@@ -60,10 +60,38 @@ class BEManager:
             'type': order_type  # 'buy' or 'sell'
         }
     
+    def check_closed_with_profit(self, magic):
+        """
+        Kiem tra xem position voi magic number da dong co loi khong.
+        Tra ve True neu dong o TP (loi), False neu dong o SL (lo).
+        """
+        # Lay lich su deals gan nhat
+        from datetime import datetime, timedelta
+        
+        # Lay deals trong 1 ngay gan nhat
+        now = datetime.now()
+        from_date = now - timedelta(days=1)
+        
+        deals = mt5.history_deals_get(from_date, now, group=self.symbol)
+        if deals is None or len(deals) == 0:
+            return False
+        
+        # Tim deal dong position voi magic number nay
+        for deal in reversed(deals):  # Tu moi nhat den cu
+            if deal.magic == magic and deal.entry == mt5.DEAL_ENTRY_OUT:
+                # Kiem tra profit
+                if deal.profit > 0:
+                    return True  # Dong co loi (TP)
+                else:
+                    return False  # Dong lo (SL)
+        
+        return False
+    
     def check_and_manage_be(self):
         """
         Kiem tra va keo BE khi can thiet.
         Goi ham nay trong vong lap chinh.
+        Chi keo BE khi ET dong o TP (co loi), khong keo khi dong o SL.
         """
         # Lay tat ca positions hien tai
         current_positions = self.get_all_et_positions()
@@ -81,7 +109,7 @@ class BEManager:
         first_pos = current_positions[0]
         is_buy = first_pos.type == mt5.POSITION_TYPE_BUY
         
-        # Kiem tra tung ET da chot loi chua
+        # Kiem tra tung ET da chot chua
         for i, magic in enumerate(self.magic_numbers):
             et_num = i + 1
             
@@ -91,13 +119,17 @@ class BEManager:
             
             # Neu ET nay khong con trong positions (da dong)
             if magic not in current_magics:
-                # Danh dau da chot loi
+                # Danh dau da dong
                 self.closed_ets.add(magic)
-                log(f"[BE] ET{et_num} da chot loi!")
                 
-                # Keo BE cho cac ET con lai
-                self._apply_be_logic(et_num, is_buy, current_positions)
-                flush_logs()
+                # Kiem tra xem dong o TP (loi) hay SL (lo)
+                if self.check_closed_with_profit(magic):
+                    log(f"[BE] ET{et_num} chot loi tai TP!")
+                    # Chi keo BE khi dong o TP
+                    self._apply_be_logic(et_num, is_buy, current_positions)
+                    flush_logs()
+                else:
+                    log(f"[BE] ET{et_num} chot lo tai SL - khong keo BE")
     
     def _apply_be_logic(self, closed_et, is_buy, current_positions):
         """

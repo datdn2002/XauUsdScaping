@@ -3,6 +3,7 @@ import MetaTrader5 as mt5
 from strategy import evaluate_signals, Signal
 from trade import process_trade
 from telegram_bot import log, flush_logs
+from be_manager import check_be
 
 SYMBOL = "XAUUSD"
 TIMEFRAME = mt5.TIMEFRAME_H1
@@ -24,6 +25,9 @@ last_candle = None
 accumulated_score = Signal()
 
 while True:
+    # Kiem tra va keo BE neu can
+    check_be()
+    
     rates = mt5.copy_rates_from_pos(SYMBOL, TIMEFRAME, 0, 2)
     if rates is None:
         time.sleep(1)

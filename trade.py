@@ -4,37 +4,144 @@ from telegram_bot import log, flush_logs
 # Global TradeManager instance
 _trade_manager = None
 
-def process_trade(symbol, signal):
+# Theo doi SL lien tiep cung chieu
+_consecutive_sl = {
+    'buy': 0,
+    'sell': 0,
+    'last_direction': None
+}
+
+# Trang thai bot
+_bot_stopped = False
+
+
+def is_cluster_open(symbol="XAUUSD"):
+    """Kiem tra co cluster nao dang mo khong"""
+    magic_numbers = [1001, 1002, 1003, 1004]
+    positions = mt5.positions_get(symbol=symbol)
+    if positions is None:
+        return False
+    
+    for pos in positions:
+        if pos.magic in magic_numbers:
+            return True
+    return False
+
+
+def get_current_cluster_direction(symbol="XAUUSD"):
+    """Lay huong cua cluster dang mo (buy/sell/None)"""
+    magic_numbers = [1001, 1002, 1003, 1004]
+    positions = mt5.positions_get(symbol=symbol)
+    if positions is None:
+        return None
+    
+    for pos in positions:
+        if pos.magic in magic_numbers:
+            if pos.type == mt5.POSITION_TYPE_BUY:
+                return 'buy'
+            else:
+                return 'sell'
+    return None
+
+
+def record_cluster_result(direction, is_profit):
+    """
+    Ghi nhan ket qua cluster (loi/lo).
+    Neu SL 3 lan lien tiep cung chieu -> dung bot.
+    """
+    global _consecutive_sl, _bot_stopped
+    
+    if is_profit:
+        # Co loi -> reset dem SL
+        _consecutive_sl['buy'] = 0
+        _consecutive_sl['sell'] = 0
+        _consecutive_sl['last_direction'] = None
+        log(f"[TRADE] Cluster {direction.upper()} co loi - reset SL counter")
+    else:
+        # Lo -> dem SL
+        if direction == _consecutive_sl['last_direction']:
+            _consecutive_sl[direction] += 1
+        else:
+            # Doi chieu -> reset chieu cu, bat dau dem chieu moi
+            _consecutive_sl['buy'] = 0
+            _consecutive_sl['sell'] = 0
+            _consecutive_sl[direction] = 1
+        
+        _consecutive_sl['last_direction'] = direction
+        
+        log(f"[TRADE] Cluster {direction.upper()} SL - dem: {_consecutive_sl[direction]}/3")
+        
+        # Kiem tra 3 lan lien tiep
+        if _consecutive_sl[direction] >= 3:
+            _bot_stopped = True
+            log(f"[TRADE] !!! BOT DUNG LAI - 3 lan SL lien tiep chieu {direction.upper()} !!!")
+            flush_logs()
+
+
+def is_bot_stopped():
+    """Kiem tra bot co bi dung khong"""
+    return _bot_stopped
+
+
+def reset_bot():
+    """Reset bot de chay lai"""
+    global _bot_stopped, _consecutive_sl
+    _bot_stopped = False
+    _consecutive_sl = {'buy': 0, 'sell': 0, 'last_direction': None}
+    log("[TRADE] Bot da duoc reset")
+
+
+def process_trade(symbol, signal, buy_threshold=35, sell_threshold=35):
     """
     Process trading signal and execute trades if conditions are met.
-    Returns True if a trade was executed, False otherwise.
+    
+    - Khong mo de lenh neu con cluster dang mo
+    - So sanh hieu diem khi ca 2 chieu deu du diem
+    - Ngat bot sau 3 SL lien tiep cung chieu
+    
+    Returns: (trade_executed, should_reset_score)
     """
     global _trade_manager
+    
+    # Kiem tra bot co bi dung khong
+    if _bot_stopped:
+        return False, False
     
     # Initialize TradeManager if not already done
     if _trade_manager is None:
         account_info = mt5.account_info()
         if account_info is None:
             log("Failed to get account info")
-            return False
+            return False, False
         _trade_manager = TradeManager(account_info.balance)
         _trade_manager.symbol = symbol
     
-    # Check signal scores and execute trades
-    BASE_SCORE = 35
+    # Kiem tra co cluster dang mo khong
+    if is_cluster_open(symbol):
+        # Dang co cluster mo -> khong mo de, tiep tuc tich luy
+        return False, False
     
-    if signal.buy_score >= BASE_SCORE and signal.buy_score >= signal.sell_score:
-        log("Signal to BUY detected. Opening buy cluster...")
+    # Tinh hieu diem
+    buy_excess = signal.buy_score - buy_threshold if signal.buy_score >= buy_threshold else -999
+    sell_excess = signal.sell_score - sell_threshold if signal.sell_score >= sell_threshold else -999
+    
+    # Neu ca 2 chieu deu chua du diem
+    if buy_excess < 0 and sell_excess < 0:
+        return False, False
+    
+    # Chon chieu co hieu diem cao hon
+    if buy_excess >= sell_excess:
+        # Mo BUY
+        log(f"Signal to BUY detected (excess: {buy_excess} vs {sell_excess})")
         _trade_manager.open_buy_cluster()
-        flush_logs()  # Gui ngay khi co lenh
-        return True
-    elif signal.sell_score >= BASE_SCORE and signal.sell_score > signal.buy_score:
-        log("Signal to SELL detected. Opening sell cluster...")
+        flush_logs()
+        return True, True
+    else:
+        # Mo SELL
+        log(f"Signal to SELL detected (excess: {sell_excess} vs {buy_excess})")
         _trade_manager.open_sell_cluster()
-        flush_logs()  # Gui ngay khi co lenh
-        return True
-    
-    return False
+        flush_logs()
+        return True, True
 
 
 class TradeManager:

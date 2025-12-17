@@ -1,12 +1,16 @@
 import time
 import MetaTrader5 as mt5
 from strategy import evaluate_signals, Signal
-from trade import process_trade
+from trade import process_trade, is_bot_stopped, is_cluster_open
 from telegram_bot import log, flush_logs
 from be_manager import check_be
 
 SYMBOL = "XAUUSD"
-TIMEFRAME = mt5.TIMEFRAME_H1
+TIMEFRAME = mt5.TIMEFRAME_M1
+
+# Nguong diem de mo lenh
+BUY_THRESHOLD = 35
+SELL_THRESHOLD = 35
 
 # ========== KET NOI ==========
 
@@ -17,7 +21,7 @@ else:
     log("Da ket noi MT5 thanh cong!")
     acc = mt5.account_info()
     log(f"Tai khoan: {acc.login} | Balance: {acc.balance}")
-    flush_logs()  # Gui ngay thong bao khoi dong
+    flush_logs()
 
 # ========== VONG LAP ==========
 
@@ -25,6 +29,12 @@ last_candle = None
 accumulated_score = Signal()
 
 while True:
+    # Kiem tra bot co bi dung khong (3 SL lien tiep)
+    if is_bot_stopped():
+        log("[MAIN] Bot da dung - 3 SL lien tiep. Thoat chuong trinh.")
+        flush_logs()
+        break
+    
     # Kiem tra va keo BE neu can
     check_be()
     
@@ -59,14 +69,22 @@ while True:
         
         log(f"This candle: Buy +{current_signal.buy_score} | Sell +{current_signal.sell_score}")
         log(f"ACCUMULATED: Buy = {accumulated_score.buy_score} | Sell = {accumulated_score.sell_score}")
-
-        # Process trade
-        trade_executed = process_trade(SYMBOL, accumulated_score)
         
-        # Reset score if trade executed
-        if trade_executed:
+        # Hien thi trang thai cluster
+        if is_cluster_open(SYMBOL):
+            log("[INFO] Cluster dang mo - chua mo lenh moi")
+
+        # Process trade - tra ve (trade_executed, should_reset)
+        trade_executed, should_reset = process_trade(SYMBOL, accumulated_score, BUY_THRESHOLD, SELL_THRESHOLD)
+        
+        # Reset score neu can
+        if should_reset:
             log(">>> RESET SCORE <<<")
             accumulated_score = Signal()
-            flush_logs()  # Gui ngay khi co lenh
+            flush_logs()
 
     time.sleep(2)
+
+# Ket thuc
+mt5.shutdown()
+log("[MAIN] Chuong trinh ket thuc.")

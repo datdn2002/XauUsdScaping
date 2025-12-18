@@ -27,6 +27,7 @@ else:
 
 last_candle = None
 accumulated_score = Signal()
+was_cluster_open = False  # Theo doi trang thai cluster
 
 while True:
     # Kiem tra bot co bi dung khong (3 SL lien tiep)
@@ -36,7 +37,27 @@ while True:
         break
     
     # Kiem tra va keo BE neu can
-    check_be()
+    # check_be()  # TAT BE MANAGER
+    
+    # Kiem tra cluster vua dong -> mo lenh ngay neu du diem
+    cluster_open_now = is_cluster_open(SYMBOL)
+    if was_cluster_open and not cluster_open_now:
+        # Cluster vua dong xong!
+        log("[INFO] Cluster vua dong - kiem tra mo lenh ngay...")
+        
+        # Kiem tra co du diem khong
+        buy_diff = accumulated_score.buy_score - BUY_THRESHOLD
+        sell_diff = accumulated_score.sell_score - SELL_THRESHOLD
+        
+        if buy_diff >= 0 or sell_diff >= 0:
+            log(f"[INFO] Du diem! Buy={accumulated_score.buy_score}, Sell={accumulated_score.sell_score}")
+            trade_executed, should_reset = process_trade(SYMBOL, accumulated_score, BUY_THRESHOLD, SELL_THRESHOLD)
+            if should_reset:
+                log(">>> RESET SCORE <<<")
+                accumulated_score = Signal()
+                flush_logs()
+    
+    was_cluster_open = cluster_open_now
     
     rates = mt5.copy_rates_from_pos(SYMBOL, TIMEFRAME, 0, 2)
     if rates is None:

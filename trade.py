@@ -151,10 +151,10 @@ class TradeManager:
     def __init__(self, initial_nav):
         self.initial_nav = initial_nav
         self.symbol = "XAUUSD"
-        self.risk_percent = 0.1  # 10% NAV
+        self.risk_percent = 0.01  # 1% NAV
         
         # Khoang cach USD cho ET2, ET3, ET4
-        self.et_offsets_usd = [0, 0.2, 0.5, 0.7]
+        self.et_offsets_usd = [0, 0.5, 1, 1.5]
         
         # SL/TP cho tung ET (USD)
         self.sl_usd = [9, 10, 11, 12]

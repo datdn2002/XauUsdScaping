@@ -28,16 +28,33 @@ CLUSTER_TIMEOUT_SECONDS = 6 * 60 * 60
 
 
 def is_cluster_open(symbol="XAUUSD"):
-    """Kiem tra co cluster nao dang mo khong"""
+    """Kiem tra co cluster nao dang mo khong (positions hoac pending orders)"""
     magic_numbers = [1001, 1002, 1003, 1004]
-    positions = mt5.positions_get(symbol=symbol)
-    if positions is None:
-        return False
     
-    for pos in positions:
-        if pos.magic in magic_numbers:
-            return True
+    # Check positions dang mo
+    positions = mt5.positions_get(symbol=symbol)
+    if positions:
+        for pos in positions:
+            if pos.magic in magic_numbers:
+                return True
+    
+    # Check pending orders
+    orders = mt5.orders_get(symbol=symbol)
+    if orders:
+        for order in orders:
+            if order.magic in magic_numbers:
+                return True
+    
     return False
+
+
+def reset_cluster_info():
+    """Reset thong tin cluster khi cluster dong het"""
+    global _cluster_info
+    _cluster_info['open_time'] = None
+    _cluster_info['direction'] = None
+    _cluster_info['tp4_price'] = None
+    _cluster_info['entry_price'] = None
 
 
 def get_current_cluster_direction(symbol="XAUUSD"):

@@ -1,7 +1,7 @@
 import time
 import MetaTrader5 as mt5
 from strategy import evaluate_signals, Signal
-from trade import process_trade, is_bot_stopped, is_cluster_open
+from trade import process_trade, is_bot_stopped, is_cluster_open, check_and_cancel_pending_if_past_tp4
 from telegram_bot import log, flush_logs
 from be_manager import check_be
 
@@ -38,6 +38,9 @@ while True:
     
     # Kiem tra va keo BE neu can
     # check_be()  # TAT BE MANAGER
+    
+    # Kiem tra gia vot qua TP4 -> huy lenh pending va refund diem
+    check_and_cancel_pending_if_past_tp4(SYMBOL, accumulated_score, BUY_THRESHOLD, SELL_THRESHOLD)
     
     # Kiem tra cluster vua dong -> mo lenh ngay neu du diem
     cluster_open_now = is_cluster_open(SYMBOL)

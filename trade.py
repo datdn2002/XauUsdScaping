@@ -1,4 +1,5 @@
 import MetaTrader5 as mt5
+import time
 from telegram_bot import log, flush_logs
 
 # Global TradeManager instance
@@ -13,6 +14,17 @@ _consecutive_sl = {
 
 # Trang thai bot
 _bot_stopped = False
+
+# Luu thoi gian mo cluster va TP4
+_cluster_info = {
+    'open_time': None,
+    'direction': None,
+    'tp4_price': None,
+    'entry_price': None  # Gia vao ET1
+}
+
+# Thoi gian timeout cluster (6 tieng = 21600 giay)
+CLUSTER_TIMEOUT_SECONDS = 6 * 60 * 60
 
 
 def is_cluster_open(symbol="XAUUSD"):
@@ -83,6 +95,104 @@ def is_bot_stopped():
     return _bot_stopped
 
 
+def is_cluster_timeout(symbol="XAUUSD"):
+    """
+    Kiem tra cluster da mo qua 6 tieng chua.
+    Neu qua 6 tieng -> cho phep mo cluster moi.
+    """
+    global _cluster_info
+    
+    if _cluster_info['open_time'] is None:
+        return False
+    
+    elapsed = time.time() - _cluster_info['open_time']
+    if elapsed > CLUSTER_TIMEOUT_SECONDS:
+        hours = elapsed / 3600
+        log(f"[TIMEOUT] Cluster da mo {hours:.1f} tieng - cho phep mo moi")
+        return True
+    return False
+
+
+def check_and_cancel_pending_if_past_tp4(symbol="XAUUSD", accumulated_score=None, buy_threshold=35, sell_threshold=35):
+    """
+    Kiem tra neu gia vot qua TP4 -> huy tat ca lenh limit va refund 50% diem.
+    
+    Returns: True neu da huy lenh, False neu khong
+    """
+    global _cluster_info
+    
+    if _cluster_info['tp4_price'] is None or _cluster_info['direction'] is None:
+        return False
+    
+    # Lay gia hien tai
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None:
+        return False
+    
+    current_price = tick.bid if _cluster_info['direction'] == 'sell' else tick.ask
+    tp4 = _cluster_info['tp4_price']
+    direction = _cluster_info['direction']
+    
+    # Kiem tra gia da vot qua TP4 chua
+    past_tp4 = False
+    if direction == 'buy' and current_price > tp4:
+        past_tp4 = True
+    elif direction == 'sell' and current_price < tp4:
+        past_tp4 = True
+    
+    if not past_tp4:
+        return False
+    
+    log(f"[CANCEL] Gia hien tai {current_price} da vot qua TP4={tp4}")
+    
+    # Lay tat ca lenh pending
+    orders = mt5.orders_get(symbol=symbol)
+    if orders is None or len(orders) == 0:
+        log("[CANCEL] Khong co lenh pending nao de huy")
+        return False
+    
+    magic_numbers = [1001, 1002, 1003, 1004]
+    cancelled_count = 0
+    
+    for order in orders:
+        if order.magic in magic_numbers:
+            # Huy lenh
+            cancel_request = {
+                "action": mt5.TRADE_ACTION_REMOVE,
+                "order": order.ticket,
+            }
+            result = mt5.order_send(cancel_request)
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                log(f"[CANCEL] Da huy lenh #{order.ticket} (ET{order.magic-1000})")
+                cancelled_count += 1
+            else:
+                error = result.comment if result else "No response"
+                log(f"[CANCEL] Loi huy lenh #{order.ticket}: {error}")
+    
+    if cancelled_count > 0:
+        # Refund 50% diem
+        if accumulated_score is not None:
+            if direction == 'buy':
+                refund = buy_threshold // 2
+                accumulated_score.buy_score += refund
+                log(f"[REFUND] Cong tra {refund} diem cho BUY -> Tong: {accumulated_score.buy_score}")
+            else:
+                refund = sell_threshold // 2
+                accumulated_score.sell_score += refund
+                log(f"[REFUND] Cong tra {refund} diem cho SELL -> Tong: {accumulated_score.sell_score}")
+        
+        # Reset cluster info
+        _cluster_info['open_time'] = None
+        _cluster_info['direction'] = None
+        _cluster_info['tp4_price'] = None
+        _cluster_info['entry_price'] = None
+        
+        flush_logs()
+        return True
+    
+    return False
+
+
 def reset_bot():
     """Reset bot de chay lai"""
     global _bot_stopped, _consecutive_sl
@@ -95,13 +205,13 @@ def process_trade(symbol, signal, buy_threshold=35, sell_threshold=35):
     """
     Process trading signal and execute trades if conditions are met.
     
-    - Khong mo de lenh neu con cluster dang mo
+    - Khong mo de lenh neu con cluster dang mo (tru khi da qua 6 tieng)
     - So sanh hieu diem khi ca 2 chieu deu du diem
     - Ngat bot sau 3 SL lien tiep cung chieu
     
     Returns: (trade_executed, should_reset_score)
     """
-    global _trade_manager
+    global _trade_manager, _cluster_info
     
     # Kiem tra bot co bi dung khong
     if _bot_stopped:
@@ -117,9 +227,20 @@ def process_trade(symbol, signal, buy_threshold=35, sell_threshold=35):
         _trade_manager.symbol = symbol
     
     # Kiem tra co cluster dang mo khong
-    if is_cluster_open(symbol):
-        # Dang co cluster mo -> khong mo de, tiep tuc tich luy
+    cluster_open = is_cluster_open(symbol)
+    cluster_timed_out = is_cluster_timeout(symbol)
+    
+    if cluster_open and not cluster_timed_out:
+        # Dang co cluster mo va chua timeout -> khong mo de, tiep tuc tich luy
         return False, False
+    
+    # Neu cluster da timeout -> reset cluster info de cho phep mo moi
+    if cluster_open and cluster_timed_out:
+        log("[TIMEOUT] Cluster cu da qua 6 tieng - cho phep mo cluster moi")
+        _cluster_info['open_time'] = None
+        _cluster_info['direction'] = None
+        _cluster_info['tp4_price'] = None
+        _cluster_info['entry_price'] = None
     
     # Tinh hieu diem
     buy_excess = signal.buy_score - buy_threshold if signal.buy_score >= buy_threshold else -999
@@ -133,13 +254,27 @@ def process_trade(symbol, signal, buy_threshold=35, sell_threshold=35):
     if buy_excess >= sell_excess:
         # Mo BUY
         log(f"Signal to BUY detected (excess: {buy_excess} vs {sell_excess})")
-        _trade_manager.open_buy_cluster()
+        entry_price, tp4_price = _trade_manager.open_buy_cluster()
+        
+        # Luu thong tin cluster
+        _cluster_info['open_time'] = time.time()
+        _cluster_info['direction'] = 'buy'
+        _cluster_info['tp4_price'] = tp4_price
+        _cluster_info['entry_price'] = entry_price
+        
         flush_logs()
         return True, True
     else:
         # Mo SELL
         log(f"Signal to SELL detected (excess: {sell_excess} vs {buy_excess})")
-        _trade_manager.open_sell_cluster()
+        entry_price, tp4_price = _trade_manager.open_sell_cluster()
+        
+        # Luu thong tin cluster
+        _cluster_info['open_time'] = time.time()
+        _cluster_info['direction'] = 'sell'
+        _cluster_info['tp4_price'] = tp4_price
+        _cluster_info['entry_price'] = entry_price
+        
         flush_logs()
         return True, True
 
@@ -202,10 +337,14 @@ class TradeManager:
         return lots[0], lots[1], lots[2], lots[3]
 
     def open_buy_cluster(self):
+        """
+        Mo cluster BUY.
+        Returns: (entry_price_et1, tp4_price)
+        """
         tick = mt5.symbol_info_tick(self.symbol)
         if tick is None:
             log("Failed to get symbol tick info")
-            return
+            return None, None
         
         price_ask = tick.ask
         price_bid = tick.bid
@@ -215,6 +354,9 @@ class TradeManager:
         min_distance = max(stop_level * point if stop_level else 0, 0.5)
         
         log(f"BUY Cluster @ Ask={price_ask}, Bid={price_bid}")
+        
+        entry_price_et1 = price_ask
+        tp4_price = None
         
         for i in range(4):
             lot = lots[i]
@@ -233,6 +375,10 @@ class TradeManager:
             
             sl = round(entry_price - sl_distance, 2)
             tp = round(entry_price + tp_distance, 2)
+            
+            # Luu TP4 (ET4)
+            if i == 3:
+                tp4_price = tp
             
             request = {
                 "action": action,
@@ -260,12 +406,18 @@ class TradeManager:
                 error = result.comment if result else "No response"
                 retcode = result.retcode if result else "N/A"
                 log(f"  [X] ET{i+1} ({order_type_str}): FAILED @ {entry_price} | Code={retcode} | {error}")
+        
+        return entry_price_et1, tp4_price
 
     def open_sell_cluster(self):
+        """
+        Mo cluster SELL.
+        Returns: (entry_price_et1, tp4_price)
+        """
         tick = mt5.symbol_info_tick(self.symbol)
         if tick is None:
             log("Failed to get symbol tick info")
-            return
+            return None, None
         
         price_bid = tick.bid
         price_ask = tick.ask
@@ -275,6 +427,9 @@ class TradeManager:
         min_distance = max(stop_level * point if stop_level else 0, 0.5)
         
         log(f"SELL Cluster @ Bid={price_bid}, Ask={price_ask}")
+        
+        entry_price_et1 = price_bid
+        tp4_price = None
         
         for i in range(4):
             lot = lots[i]
@@ -293,6 +448,10 @@ class TradeManager:
             
             sl = round(entry_price + sl_distance, 2)
             tp = round(entry_price - tp_distance, 2)
+            
+            # Luu TP4 (ET4)
+            if i == 3:
+                tp4_price = tp
             
             request = {
                 "action": action,
@@ -320,3 +479,5 @@ class TradeManager:
                 error = result.comment if result else "No response"
                 retcode = result.retcode if result else "N/A"
                 log(f"  [X] ET{i+1} ({order_type_str}): FAILED @ {entry_price} | Code={retcode} | {error}")
+        
+        return entry_price_et1, tp4_price

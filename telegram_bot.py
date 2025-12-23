@@ -5,16 +5,16 @@ import time
 import json
 
 # Telegram Bot Configuration
-# BOT_TOKEN = "8388937091:AAFRyeKoIGeUnVxtoSskxhRc_pCS9I5QBCg"
-BOT_TOKEN = "8429353540:AAGNIPh-Lje4KAl_Ko57OS8TBWfgzpgaJWM"
+BOT_TOKEN = "8388937091:AAFRyeKoIGeUnVxtoSskxhRc_pCS9I5QBCg"
+# BOT_TOKEN = "8429353540:AAGNIPh-Lje4KAl_Ko57OS8TBWfgzpgaJWM"
 
 
 
 # Danh sach cac chat se nhan thong bao (ca nhan + nhom)
 CHAT_IDS = [
-#    -5027471114,  # Nhom: Bot Trailing XAU
+   -5027471114,  # Nhom: Bot Trailing XAU
     5638732845,   # Ca nhan: t
-    -1003467971094, # nhom scaping
+    # -1003467971094, # nhom scaping
 ]
 
 # Buffer de gom nhieu log lai gui 1 lan (tranh spam Telegram)
@@ -33,6 +33,7 @@ _bot_control = {
     'next_buy_score': None,   # Diem buy cho cluster tiep theo (None = binh thuong)
     'next_sell_score': None,  # Diem sell cho cluster tiep theo (None = binh thuong)
     'reset_score': False,     # Flag de reset score
+    'should_reset_bot': False, # Flag de reset bot (counter, stopped state)
 }
 _control_lock = threading.Lock()
 _last_update_id = 0
@@ -227,6 +228,15 @@ def check_reset_score():
     return False
 
 
+def check_should_reset_bot():
+    """Kiem tra co yeu cau reset bot khong (khi /start)"""
+    with _control_lock:
+        if _bot_control['should_reset_bot']:
+            _bot_control['should_reset_bot'] = False
+            return True
+    return False
+
+
 def get_next_score_override():
     """
     Lay diem da set cho cluster tiep theo.
@@ -276,8 +286,8 @@ def _handle_command(cmd, args, chat_id):
         return "🔴 Da TAT chieu SELL. (Buy van hoat dong)"
     
     elif cmd in ['/start', '/on', '/bat']:
-        set_bot_control(active=True, buy_active=True, sell_active=True)
-        return "🟢 Bot da BAT. Ca 2 chieu deu hoat dong."
+        set_bot_control(active=True, buy_active=True, sell_active=True, should_reset_bot=True)
+        return "🟢 Bot da BAT. Counter da reset. Ca 2 chieu deu hoat dong."
     
     elif cmd in ['/start_buy', '/batbuy']:
         set_bot_control(buy_active=True)
@@ -307,13 +317,18 @@ def _handle_command(cmd, args, chat_id):
     
     elif cmd in ['/set', '/setdiem']:
         # Set diem cho cluster tiep theo
-        # Format: /set buy=20 sell=15 hoac /set 20 15
+        # Format: /set buy=20 sell=15 hoac /set buy = 20 sell = 15
         buy_score = None
         sell_score = None
         
-        for arg in args:
-            if '=' in arg:
-                key, val = arg.split('=', 1)
+        # Ghep tat ca args lai va loai bo dau cach xung quanh '='
+        # VD: "sell = 100" -> "sell=100"
+        args_str = ' '.join(args).replace(' = ', '=').replace('= ', '=').replace(' =', '=')
+        parts = args_str.split()
+        
+        for part in parts:
+            if '=' in part:
+                key, val = part.split('=', 1)
                 try:
                     if key.lower() == 'buy':
                         buy_score = int(val)
@@ -322,8 +337,9 @@ def _handle_command(cmd, args, chat_id):
                 except:
                     pass
             else:
+                # Truong hop chi co so (VD: /set 100 50)
                 try:
-                    val = int(arg)
+                    val = int(part)
                     if buy_score is None:
                         buy_score = val
                     elif sell_score is None:

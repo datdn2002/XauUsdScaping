@@ -5,15 +5,17 @@ from telegram_bot import log, flush_logs
 # Global TradeManager instance
 _trade_manager = None
 
-# Theo doi SL lien tiep cung chieu
-_consecutive_sl = {
-    'buy': 0,
-    'sell': 0,
+# Theo doi so lenh mo lien tiep cung chieu
+_consecutive_trades = {
+    'count': 0,
     'last_direction': None
 }
 
 # Trang thai bot
 _bot_stopped = False
+
+# Gioi han so lenh lien tiep cung chieu truoc khi dung
+MAX_CONSECUTIVE_TRADES = 3
 
 # Luu thoi gian mo cluster va TP4
 _cluster_info = {
@@ -57,6 +59,66 @@ def reset_cluster_info():
     _cluster_info['entry_price'] = None
 
 
+def check_cluster_result_and_record(symbol="XAUUSD"):
+    """
+    Kiem tra ket qua cluster vua dong va ghi nhan SL neu can.
+    Goi ham nay khi phat hien cluster vua dong.
+    
+    Returns: (direction, is_profit, total_profit)
+    """
+    from datetime import datetime, timedelta
+    
+    # Lay huong va thoi gian mo cluster truoc khi reset
+    direction = _cluster_info.get('direction')
+    cluster_open_time = _cluster_info.get('open_time')
+    
+    if not direction:
+        return None, None, 0
+    
+    # Lay lich su deals
+    now = datetime.now()
+    from_date = now - timedelta(days=1)
+    
+    deals = mt5.history_deals_get(from_date, now)
+    if deals is None:
+        log("[SL_CHECK] Khong lay duoc history deals")
+        return direction, False, 0
+    
+    # Loc deals cua cluster (magic 1001-1004)
+    magic_numbers = [1001, 1002, 1003, 1004]
+    cluster_deals = [d for d in deals 
+                     if d.magic in magic_numbers 
+                     and d.symbol == symbol
+                     and d.entry == mt5.DEAL_ENTRY_OUT]  # Chi lay deals dong lenh
+    
+    if not cluster_deals:
+        log("[SL_CHECK] Khong tim thay deals dong cua cluster")
+        return direction, False, 0
+    
+    # Chi lay deals SAU KHI cluster nay mo
+    if cluster_open_time:
+        recent_deals = [d for d in cluster_deals 
+                        if d.time >= cluster_open_time]
+    else:
+        # Fallback: lay 4 deals gan nhat (1 cluster co toi da 4 ET)
+        recent_deals = sorted(cluster_deals, key=lambda d: d.time, reverse=True)[:4]
+    
+    if not recent_deals:
+        log("[SL_CHECK] Khong co deals nao cua cluster nay")
+        return direction, False, 0
+    
+    # Tinh tong profit cua cluster nay
+    total_profit = sum(d.profit for d in recent_deals)
+    is_profit = total_profit > 0
+    
+    log(f"[SL_CHECK] Cluster {direction.upper()} dong: {len(recent_deals)} deals, profit=${total_profit:.2f}")
+    
+    # Ghi nhan ket qua
+    record_cluster_result(direction, is_profit)
+    
+    return direction, is_profit, total_profit
+
+
 def get_current_cluster_direction(symbol="XAUUSD"):
     """Lay huong cua cluster dang mo (buy/sell/None)"""
     magic_numbers = [1001, 1002, 1003, 1004]
@@ -73,38 +135,39 @@ def get_current_cluster_direction(symbol="XAUUSD"):
     return None
 
 
+def record_trade_opened(direction):
+    """
+    Ghi nhan khi mo lenh moi.
+    Neu 3 lan lien tiep cung chieu -> dung bot.
+    """
+    global _consecutive_trades, _bot_stopped
+    
+    if direction == _consecutive_trades['last_direction']:
+        # Cung chieu -> tang dem
+        _consecutive_trades['count'] += 1
+    else:
+        # Khac chieu -> reset va bat dau dem chieu moi
+        _consecutive_trades['count'] = 1
+        _consecutive_trades['last_direction'] = direction
+    
+    log(f"[TRADE] Mo lenh {direction.upper()} - dem: {_consecutive_trades['count']}/{MAX_CONSECUTIVE_TRADES}")
+    
+    # Kiem tra 3 lan lien tiep
+    if _consecutive_trades['count'] >= MAX_CONSECUTIVE_TRADES:
+        _bot_stopped = True
+        log(f"[TRADE] !!! BOT DUNG LAI - {MAX_CONSECUTIVE_TRADES} lan {direction.upper()} lien tiep !!!")
+        flush_logs()
+
+
 def record_cluster_result(direction, is_profit):
     """
     Ghi nhan ket qua cluster (loi/lo).
-    Neu SL 3 lan lien tiep cung chieu -> dung bot.
+    Chi dung de log, khong anh huong den viec dung bot.
     """
-    global _consecutive_sl, _bot_stopped
-    
     if is_profit:
-        # Co loi -> reset dem SL
-        _consecutive_sl['buy'] = 0
-        _consecutive_sl['sell'] = 0
-        _consecutive_sl['last_direction'] = None
-        log(f"[TRADE] Cluster {direction.upper()} co loi - reset SL counter")
+        log(f"[TRADE] Cluster {direction.upper()} CHOT LOI")
     else:
-        # Lo -> dem SL
-        if direction == _consecutive_sl['last_direction']:
-            _consecutive_sl[direction] += 1
-        else:
-            # Doi chieu -> reset chieu cu, bat dau dem chieu moi
-            _consecutive_sl['buy'] = 0
-            _consecutive_sl['sell'] = 0
-            _consecutive_sl[direction] = 1
-        
-        _consecutive_sl['last_direction'] = direction
-        
-        log(f"[TRADE] Cluster {direction.upper()} SL - dem: {_consecutive_sl[direction]}/3")
-        
-        # Kiem tra 3 lan lien tiep
-        if _consecutive_sl[direction] >= 3:
-            _bot_stopped = True
-            log(f"[TRADE] !!! BOT DUNG LAI - 3 lan SL lien tiep chieu {direction.upper()} !!!")
-            flush_logs()
+        log(f"[TRADE] Cluster {direction.upper()} CHOT LO")
 
 
 def is_bot_stopped():
@@ -212,9 +275,9 @@ def check_and_cancel_pending_if_past_tp4(symbol="XAUUSD", accumulated_score=None
 
 def reset_bot():
     """Reset bot de chay lai"""
-    global _bot_stopped, _consecutive_sl
+    global _bot_stopped, _consecutive_trades
     _bot_stopped = False
-    _consecutive_sl = {'buy': 0, 'sell': 0, 'last_direction': None}
+    _consecutive_trades = {'count': 0, 'last_direction': None}
     log("[TRADE] Bot da duoc reset")
 
 
@@ -251,6 +314,9 @@ def force_open_cluster(symbol, direction):
     _cluster_info['direction'] = direction
     _cluster_info['tp4_price'] = tp4_price
     _cluster_info['entry_price'] = entry_price
+    
+    # Ghi nhan lenh mo - kiem tra 3 lan lien tiep
+    record_trade_opened(direction)
     
     flush_logs()
     return True
@@ -328,6 +394,9 @@ def process_trade(symbol, signal, buy_threshold=35, sell_threshold=35, bot_ctrl=
         _cluster_info['tp4_price'] = tp4_price
         _cluster_info['entry_price'] = entry_price
         
+        # Ghi nhan lenh mo - kiem tra 3 lan lien tiep
+        record_trade_opened('buy')
+        
         flush_logs()
         return True, True
     else:
@@ -340,6 +409,9 @@ def process_trade(symbol, signal, buy_threshold=35, sell_threshold=35, bot_ctrl=
         _cluster_info['direction'] = 'sell'
         _cluster_info['tp4_price'] = tp4_price
         _cluster_info['entry_price'] = entry_price
+        
+        # Ghi nhan lenh mo - kiem tra 3 lan lien tiep
+        record_trade_opened('sell')
         
         flush_logs()
         return True, True

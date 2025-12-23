@@ -1,10 +1,11 @@
 import time
 import MetaTrader5 as mt5
 from strategy import evaluate_signals, Signal
-from trade import process_trade, is_bot_stopped, is_cluster_open, check_and_cancel_pending_if_past_tp4, reset_cluster_info, force_open_cluster
+from trade import process_trade, is_bot_stopped, is_cluster_open, check_and_cancel_pending_if_past_tp4, reset_cluster_info, force_open_cluster, check_cluster_result_and_record, reset_bot
 from telegram_bot import (
     log, flush_logs, 
-    get_bot_control, check_force_trade, check_reset_score, get_next_score_override
+    get_bot_control, set_bot_control, check_force_trade, check_reset_score, get_next_score_override,
+    check_should_reset_bot
 )
 from be_manager import check_be
 
@@ -31,9 +32,17 @@ else:
 last_candle = None
 accumulated_score = Signal()
 was_cluster_open = False  # Theo doi trang thai cluster
+bot_stopped_logged = False  # Tranh spam log khi bot dung
 
 while True:
     # ========== KIEM TRA COMMANDS TU TELEGRAM ==========
+    
+    # Kiem tra yeu cau reset bot (khi /start)
+    if check_should_reset_bot():
+        reset_bot()
+        bot_stopped_logged = False  # Reset flag de cho phep log lai neu dung lan nua
+        log(">>> BOT DA DUOC RESET (tu /start) <<<")
+        flush_logs()
     
     # Kiem tra yeu cau reset score
     if check_reset_score():
@@ -62,10 +71,14 @@ while True:
     
     # ========== KIEM TRA BOT DUNG ==========
     
-    # Kiem tra bot co bi dung khong (3 SL lien tiep hoac tu Telegram)
+    # Kiem tra bot co bi dung khong (3 lenh lien tiep hoac tu Telegram)
     if is_bot_stopped() or not bot_ctrl['active']:
-        if is_bot_stopped():
-            log("[MAIN] Bot da dung - 3 SL lien tiep.")
+        if is_bot_stopped() and not bot_stopped_logged:
+            log("[MAIN] Bot da dung - 3 lenh lien tiep cung chieu. Dung /start de bat lai.")
+            # Sync trang thai voi telegram_bot
+            set_bot_control(active=False)
+            flush_logs()
+            bot_stopped_logged = True
         time.sleep(5)
         continue  # Khong break, cho phep bat lai tu Telegram
     
@@ -80,9 +93,15 @@ while True:
         check_and_cancel_pending_if_past_tp4(SYMBOL, accumulated_score, BUY_THRESHOLD, SELL_THRESHOLD)
     
     if was_cluster_open and not cluster_open_now:
-        # Cluster vua dong xong! Reset thong tin cluster
+        # Cluster vua dong xong!
+        log("[INFO] Cluster vua dong!")
+        
+        # Kiem tra ket qua cluster (loi/lo) va ghi nhan SL neu can
+        check_cluster_result_and_record(SYMBOL)
+        
+        # Reset thong tin cluster
         reset_cluster_info()
-        log("[INFO] Cluster vua dong - kiem tra mo lenh ngay...")
+        log("[INFO] Kiem tra mo lenh moi...")
         
         # Kiem tra co du diem khong
         buy_diff = accumulated_score.buy_score - BUY_THRESHOLD

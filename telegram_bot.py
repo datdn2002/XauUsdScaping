@@ -2,21 +2,36 @@ import requests
 from datetime import datetime
 import threading
 import time
+import json
 
 # Telegram Bot Configuration
-BOT_TOKEN = "8429353540:AAGNIPh-Lje4KAl_Ko57OS8TBWfgzpgaJWM"
+BOT_TOKEN = "8388937091:AAFRyeKoIGeUnVxtoSskxhRc_pCS9I5QBCg"
 
 # Danh sach cac chat se nhan thong bao (ca nhan + nhom)
 CHAT_IDS = [
-    5638732845,      # Private chat - Alex
-    -1003467971094,  # Group chat
+   -5027471114,  # Nhom: Bot Trailing XAU
+    5638732845,   # Ca nhan: t
 ]
 
-# Buffer để gom nhiều log lại gửi 1 lần (tránh spam Telegram)
+# Buffer de gom nhieu log lai gui 1 lan (tranh spam Telegram)
 _log_buffer = []
 _buffer_lock = threading.Lock()
 _last_send_time = 0
-BUFFER_DELAY = 3  # Gom log trong 3 giây rồi gửi 1 lần
+BUFFER_DELAY = 3  # Gom log trong 3 giay roi gui 1 lan
+
+# ========== BOT CONTROL STATE ==========
+_bot_control = {
+    'active': True,           # Bot dang hoat dong
+    'buy_active': True,       # Cho phep mo buy
+    'sell_active': True,      # Cho phep mo sell
+    'force_buy': False,       # Mo buy ngay lap tuc
+    'force_sell': False,      # Mo sell ngay lap tuc
+    'next_buy_score': None,   # Diem buy cho cluster tiep theo (None = binh thuong)
+    'next_sell_score': None,  # Diem sell cho cluster tiep theo (None = binh thuong)
+    'reset_score': False,     # Flag de reset score
+}
+_control_lock = threading.Lock()
+_last_update_id = 0
 
 def get_chat_id():
     """
@@ -166,6 +181,260 @@ def format_score_message(buy_score, sell_score, accumulated_buy, accumulated_sel
     msg += f"<b>TÍCH LŨY: Buy = {accumulated_buy} | Sell = {accumulated_sell}</b>"
     
     return msg
+
+
+# ========== TELEGRAM COMMAND HANDLER ==========
+
+def get_bot_control():
+    """Lay trang thai dieu khien bot (thread-safe)"""
+    with _control_lock:
+        return _bot_control.copy()
+
+
+def set_bot_control(**kwargs):
+    """Cap nhat trang thai dieu khien bot"""
+    with _control_lock:
+        for key, value in kwargs.items():
+            if key in _bot_control:
+                _bot_control[key] = value
+
+
+def check_force_trade():
+    """
+    Kiem tra co yeu cau mo lenh ngay khong.
+    Returns: 'buy', 'sell', hoac None
+    """
+    with _control_lock:
+        if _bot_control['force_buy']:
+            _bot_control['force_buy'] = False
+            return 'buy'
+        if _bot_control['force_sell']:
+            _bot_control['force_sell'] = False
+            return 'sell'
+    return None
+
+
+def check_reset_score():
+    """Kiem tra co yeu cau reset score khong"""
+    with _control_lock:
+        if _bot_control['reset_score']:
+            _bot_control['reset_score'] = False
+            return True
+    return False
+
+
+def get_next_score_override():
+    """
+    Lay diem da set cho cluster tiep theo.
+    Returns: (buy_score, sell_score) hoac (None, None) neu khong co
+    """
+    with _control_lock:
+        buy = _bot_control['next_buy_score']
+        sell = _bot_control['next_sell_score']
+        # Reset sau khi lay
+        _bot_control['next_buy_score'] = None
+        _bot_control['next_sell_score'] = None
+        return buy, sell
+
+
+def _parse_command(text):
+    """Parse command tu tin nhan Telegram"""
+    if not text:
+        return None, []
+    
+    text = text.strip().lower()
+    parts = text.split()
+    
+    if not parts:
+        return None, []
+    
+    cmd = parts[0]
+    args = parts[1:] if len(parts) > 1 else []
+    
+    return cmd, args
+
+
+def _handle_command(cmd, args, chat_id):
+    """Xu ly command va tra ve response"""
+    global _bot_control
+    
+    if cmd in ['/stop', '/off', '/tat']:
+        # Tat bot, reset score
+        set_bot_control(active=False, buy_active=False, sell_active=False, reset_score=True)
+        return "🔴 Bot da TAT. Score da reset ve 0."
+    
+    elif cmd in ['/stop_buy', '/tatbuy']:
+        set_bot_control(buy_active=False)
+        return "🔴 Da TAT chieu BUY. (Sell van hoat dong)"
+    
+    elif cmd in ['/stop_sell', '/tatsell']:
+        set_bot_control(sell_active=False)
+        return "🔴 Da TAT chieu SELL. (Buy van hoat dong)"
+    
+    elif cmd in ['/start', '/on', '/bat']:
+        set_bot_control(active=True, buy_active=True, sell_active=True)
+        return "🟢 Bot da BAT. Ca 2 chieu deu hoat dong."
+    
+    elif cmd in ['/start_buy', '/batbuy']:
+        set_bot_control(buy_active=True)
+        return "🟢 Da BAT chieu BUY."
+    
+    elif cmd in ['/start_sell', '/batsell']:
+        set_bot_control(sell_active=True)
+        return "🟢 Da BAT chieu SELL."
+    
+    elif cmd in ['/buy', '/buynow', '/muangay']:
+        # Check trang thai buy truoc
+        ctrl = get_bot_control()
+        if not ctrl['buy_active']:
+            return "❌ Khong the mo BUY - chieu BUY dang TAT.\nDung /start_buy de bat lai."
+        # Mo buy ngay lap tuc
+        set_bot_control(force_buy=True, active=True)
+        return "⚡ Se mo lenh BUY ngay lap tuc!"
+    
+    elif cmd in ['/sell', '/sellnow', '/banngay']:
+        # Check trang thai sell truoc
+        ctrl = get_bot_control()
+        if not ctrl['sell_active']:
+            return "❌ Khong the mo SELL - chieu SELL dang TAT.\nDung /start_sell de bat lai."
+        # Mo sell ngay lap tuc
+        set_bot_control(force_sell=True, active=True)
+        return "⚡ Se mo lenh SELL ngay lap tuc!"
+    
+    elif cmd in ['/set', '/setdiem']:
+        # Set diem cho cluster tiep theo
+        # Format: /set buy=20 sell=15 hoac /set 20 15
+        buy_score = None
+        sell_score = None
+        
+        for arg in args:
+            if '=' in arg:
+                key, val = arg.split('=', 1)
+                try:
+                    if key.lower() == 'buy':
+                        buy_score = int(val)
+                    elif key.lower() == 'sell':
+                        sell_score = int(val)
+                except:
+                    pass
+            else:
+                try:
+                    val = int(arg)
+                    if buy_score is None:
+                        buy_score = val
+                    elif sell_score is None:
+                        sell_score = val
+                except:
+                    pass
+        
+        if buy_score is not None or sell_score is not None:
+            set_bot_control(
+                next_buy_score=buy_score,
+                next_sell_score=sell_score,
+                active=True
+            )
+            msg = "✅ Da set diem cho cluster tiep theo:\n"
+            if buy_score is not None:
+                msg += f"   Buy: {buy_score}\n"
+            if sell_score is not None:
+                msg += f"   Sell: {sell_score}"
+            return msg
+        else:
+            return "❌ Sai format. VD: /set buy=20 sell=15"
+    
+    elif cmd in ['/status', '/trangthai']:
+        ctrl = get_bot_control()
+        status = "🟢 DANG CHAY" if ctrl['active'] else "🔴 DA TAT"
+        buy_status = "✅" if ctrl['buy_active'] else "❌"
+        sell_status = "✅" if ctrl['sell_active'] else "❌"
+        
+        msg = f"📊 <b>TRANG THAI BOT</b>\n"
+        msg += f"━━━━━━━━━━━━━━━\n"
+        msg += f"Bot: {status}\n"
+        msg += f"Buy: {buy_status} | Sell: {sell_status}\n"
+        
+        if ctrl['next_buy_score'] or ctrl['next_sell_score']:
+            msg += f"\n⏳ Diem set cho cluster tiep theo:\n"
+            msg += f"   Buy: {ctrl['next_buy_score'] or 'N/A'}\n"
+            msg += f"   Sell: {ctrl['next_sell_score'] or 'N/A'}"
+        
+        return msg
+    
+    elif cmd in ['/help', '/huongdan']:
+        msg = """📖 <b>HUONG DAN SU DUNG</b>
+━━━━━━━━━━━━━━━
+
+<b>Bat/Tat bot:</b>
+/stop - Tat bot, reset score
+/start - Bat bot
+
+<b>Bat/Tat 1 chieu:</b>
+/stop_buy - Tat chieu Buy
+/stop_sell - Tat chieu Sell
+/start_buy - Bat chieu Buy
+/start_sell - Bat chieu Sell
+
+<b>Mo lenh ngay:</b>
+/buy - Mo Buy ngay
+/sell - Mo Sell ngay
+
+<b>Set diem:</b>
+/set buy=20 sell=15
+(Ap dung cho cluster tiep theo)
+
+<b>Xem trang thai:</b>
+/status"""
+        return msg
+    
+    return None  # Khong phai command
+
+
+def _poll_commands():
+    """
+    Thread poll tin nhan tu Telegram de xu ly commands.
+    Chay lien tuc, kiem tra moi 2 giay.
+    """
+    global _last_update_id
+    
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+    
+    while True:
+        try:
+            params = {
+                "offset": _last_update_id + 1,
+                "timeout": 10,
+                "allowed_updates": ["message"]
+            }
+            
+            response = requests.get(url, params=params, timeout=15)
+            data = response.json()
+            
+            if data.get("ok") and data.get("result"):
+                for update in data["result"]:
+                    _last_update_id = update["update_id"]
+                    
+                    if "message" in update and "text" in update["message"]:
+                        text = update["message"]["text"]
+                        chat_id = update["message"]["chat"]["id"]
+                        
+                        # Parse va xu ly command
+                        cmd, args = _parse_command(text)
+                        if cmd and cmd.startswith('/'):
+                            response_msg = _handle_command(cmd, args, chat_id)
+                            if response_msg:
+                                send_telegram(response_msg, chat_id)
+                                print(f"[CMD] {cmd} -> {response_msg[:50]}...")
+        
+        except Exception as e:
+            print(f"[CMD] Poll error: {e}")
+        
+        time.sleep(2)
+
+
+# Start command polling thread
+_cmd_thread = threading.Thread(target=_poll_commands, daemon=True)
+_cmd_thread.start()
+print("[BOT] Telegram command handler started")
 
 
 # ========== TEST ==========

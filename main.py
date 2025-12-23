@@ -1,8 +1,11 @@
 import time
 import MetaTrader5 as mt5
 from strategy import evaluate_signals, Signal
-from trade import process_trade, is_bot_stopped, is_cluster_open, check_and_cancel_pending_if_past_tp4, reset_cluster_info
-from telegram_bot import log, flush_logs
+from trade import process_trade, is_bot_stopped, is_cluster_open, check_and_cancel_pending_if_past_tp4, reset_cluster_info, force_open_cluster
+from telegram_bot import (
+    log, flush_logs, 
+    get_bot_control, check_force_trade, check_reset_score, get_next_score_override
+)
 from be_manager import check_be
 
 SYMBOL = "XAUUSD"
@@ -30,11 +33,41 @@ accumulated_score = Signal()
 was_cluster_open = False  # Theo doi trang thai cluster
 
 while True:
-    # Kiem tra bot co bi dung khong (3 SL lien tiep)
-    if is_bot_stopped():
-        log("[MAIN] Bot da dung - 3 SL lien tiep. Thoat chuong trinh.")
+    # ========== KIEM TRA COMMANDS TU TELEGRAM ==========
+    
+    # Kiem tra yeu cau reset score
+    if check_reset_score():
+        log(">>> RESET SCORE (tu Telegram) <<<")
+        accumulated_score = Signal()
         flush_logs()
-        break
+    
+    # Kiem tra trang thai bot
+    bot_ctrl = get_bot_control()
+    
+    # Kiem tra yeu cau mo lenh ngay
+    force_direction = check_force_trade()
+    if force_direction and not is_cluster_open(SYMBOL):
+        log(f"[CMD] Mo {force_direction.upper()} ngay tu Telegram!")
+        force_open_cluster(SYMBOL, force_direction)
+        flush_logs()
+    
+    # Kiem tra co diem override cho cluster tiep theo
+    override_buy, override_sell = get_next_score_override()
+    if override_buy is not None:
+        accumulated_score.buy_score = override_buy
+        log(f"[CMD] Set diem Buy = {override_buy}")
+    if override_sell is not None:
+        accumulated_score.sell_score = override_sell
+        log(f"[CMD] Set diem Sell = {override_sell}")
+    
+    # ========== KIEM TRA BOT DUNG ==========
+    
+    # Kiem tra bot co bi dung khong (3 SL lien tiep hoac tu Telegram)
+    if is_bot_stopped() or not bot_ctrl['active']:
+        if is_bot_stopped():
+            log("[MAIN] Bot da dung - 3 SL lien tiep.")
+        time.sleep(5)
+        continue  # Khong break, cho phep bat lai tu Telegram
     
     # Kiem tra va keo BE neu can
     # check_be()  # TAT BE MANAGER
@@ -56,8 +89,8 @@ while True:
         sell_diff = accumulated_score.sell_score - SELL_THRESHOLD
         
         if buy_diff >= 0 or sell_diff >= 0:
-            log(f"[INFO] Du diem! Buy={accumulated_score.buy_score}, Sell={accumulated_score.sell_score}")
-            trade_executed, should_reset = process_trade(SYMBOL, accumulated_score, BUY_THRESHOLD, SELL_THRESHOLD)
+            log(f"[INFO] Du diem! Buy={accumulated_score.buy_score}/{BUY_THRESHOLD}, Sell={accumulated_score.sell_score}/{SELL_THRESHOLD}")
+            trade_executed, should_reset = process_trade(SYMBOL, accumulated_score, BUY_THRESHOLD, SELL_THRESHOLD, bot_ctrl)
             if should_reset:
                 log(">>> RESET SCORE <<<")
                 accumulated_score = Signal()
@@ -94,15 +127,24 @@ while True:
         accumulated_score.buy_score += current_signal.buy_score
         accumulated_score.sell_score += current_signal.sell_score
         
+        # Hien thi diem dang xx/xx
         log(f"This candle: Buy +{current_signal.buy_score} | Sell +{current_signal.sell_score}")
-        log(f"ACCUMULATED: Buy = {accumulated_score.buy_score} | Sell = {accumulated_score.sell_score}")
+        log(f"ACCUMULATED: Buy {accumulated_score.buy_score}/{BUY_THRESHOLD} | Sell {accumulated_score.sell_score}/{SELL_THRESHOLD}")
         
-        # Hien thi trang thai cluster
+        # Hien thi trang thai cluster va bot
         if is_cluster_open(SYMBOL):
             log("[INFO] Cluster dang mo - chua mo lenh moi")
+        
+        if not bot_ctrl['buy_active'] or not bot_ctrl['sell_active']:
+            status = []
+            if not bot_ctrl['buy_active']:
+                status.append("Buy: OFF")
+            if not bot_ctrl['sell_active']:
+                status.append("Sell: OFF")
+            log(f"[INFO] {' | '.join(status)}")
 
         # Process trade - tra ve (trade_executed, should_reset)
-        trade_executed, should_reset = process_trade(SYMBOL, accumulated_score, BUY_THRESHOLD, SELL_THRESHOLD)
+        trade_executed, should_reset = process_trade(SYMBOL, accumulated_score, BUY_THRESHOLD, SELL_THRESHOLD, bot_ctrl)
         
         # Reset score neu can
         if should_reset:

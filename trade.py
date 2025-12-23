@@ -218,13 +218,52 @@ def reset_bot():
     log("[TRADE] Bot da duoc reset")
 
 
-def process_trade(symbol, signal, buy_threshold=35, sell_threshold=35):
+def force_open_cluster(symbol, direction):
+    """
+    Mo cluster ngay lap tuc theo lenh tu Telegram.
+    
+    Args:
+        symbol: Symbol (XAUUSD)
+        direction: 'buy' hoac 'sell'
+    
+    Returns: True neu thanh cong
+    """
+    global _trade_manager, _cluster_info
+    
+    # Initialize TradeManager if not already done
+    if _trade_manager is None:
+        account_info = mt5.account_info()
+        if account_info is None:
+            log("[FORCE] Failed to get account info")
+            return False
+        _trade_manager = TradeManager(account_info.balance)
+        _trade_manager.symbol = symbol
+    
+    if direction == 'buy':
+        log("[FORCE] Mo BUY cluster theo lenh Telegram")
+        entry_price, tp4_price = _trade_manager.open_buy_cluster()
+    else:
+        log("[FORCE] Mo SELL cluster theo lenh Telegram")
+        entry_price, tp4_price = _trade_manager.open_sell_cluster()
+    
+    # Luu thong tin cluster
+    _cluster_info['open_time'] = time.time()
+    _cluster_info['direction'] = direction
+    _cluster_info['tp4_price'] = tp4_price
+    _cluster_info['entry_price'] = entry_price
+    
+    flush_logs()
+    return True
+
+
+def process_trade(symbol, signal, buy_threshold=35, sell_threshold=35, bot_ctrl=None):
     """
     Process trading signal and execute trades if conditions are met.
     
     - Khong mo de lenh neu con cluster dang mo (tru khi da qua 6 tieng)
     - So sanh hieu diem khi ca 2 chieu deu du diem
     - Ngat bot sau 3 SL lien tiep cung chieu
+    - Ton trong buy_active/sell_active tu Telegram
     
     Returns: (trade_executed, should_reset_score)
     """
@@ -233,6 +272,10 @@ def process_trade(symbol, signal, buy_threshold=35, sell_threshold=35):
     # Kiem tra bot co bi dung khong
     if _bot_stopped:
         return False, False
+    
+    # Default bot control neu khong truyen vao
+    if bot_ctrl is None:
+        bot_ctrl = {'active': True, 'buy_active': True, 'sell_active': True}
     
     # Initialize TradeManager if not already done
     if _trade_manager is None:
@@ -259,11 +302,17 @@ def process_trade(symbol, signal, buy_threshold=35, sell_threshold=35):
         _cluster_info['tp4_price'] = None
         _cluster_info['entry_price'] = None
     
-    # Tinh hieu diem
-    buy_excess = signal.buy_score - buy_threshold if signal.buy_score >= buy_threshold else -999
-    sell_excess = signal.sell_score - sell_threshold if signal.sell_score >= sell_threshold else -999
+    # Tinh hieu diem - chi tinh neu chieu do dang active
+    buy_excess = -999
+    sell_excess = -999
     
-    # Neu ca 2 chieu deu chua du diem
+    if bot_ctrl.get('buy_active', True) and signal.buy_score >= buy_threshold:
+        buy_excess = signal.buy_score - buy_threshold
+    
+    if bot_ctrl.get('sell_active', True) and signal.sell_score >= sell_threshold:
+        sell_excess = signal.sell_score - sell_threshold
+    
+    # Neu ca 2 chieu deu chua du diem hoac bi tat
     if buy_excess < 0 and sell_excess < 0:
         return False, False
     
@@ -310,7 +359,7 @@ class TradeManager:
         
         # SL/TP cho tung ET (USD)
         self.sl_usd = [9, 10, 11, 12]
-        self.tp_usd = [3, 5, 10, 15]
+        self.tp_usd = [1, 1, 1, 1]
         
         # Phan bo risk: 20%, 20%, 40%, 20%
         self.risk_allocation = [0.20, 0.20, 0.40, 0.20]
@@ -373,7 +422,12 @@ class TradeManager:
         log(f"BUY Cluster @ Ask={price_ask}, Bid={price_bid}")
         
         entry_price_et1 = price_ask
-        tp4_price = None
+        
+        # TP4 tinh tu ET1 (market order) voi khoang cach xa nhat
+        # BUY: TP cao hon entry, nen TP4 = ask + max(tp_usd)
+        max_tp_distance = max(self.tp_usd)
+        tp4_price = round(price_ask + max_tp_distance, 2)
+        log(f"  TP4 (furthest target) = {tp4_price}")
         
         for i in range(4):
             lot = lots[i]
@@ -392,10 +446,6 @@ class TradeManager:
             
             sl = round(entry_price - sl_distance, 2)
             tp = round(entry_price + tp_distance, 2)
-            
-            # Luu TP4 (ET4)
-            if i == 3:
-                tp4_price = tp
             
             request = {
                 "action": action,
@@ -446,7 +496,12 @@ class TradeManager:
         log(f"SELL Cluster @ Bid={price_bid}, Ask={price_ask}")
         
         entry_price_et1 = price_bid
-        tp4_price = None
+        
+        # TP4 tinh tu ET1 (market order) voi khoang cach xa nhat
+        # SELL: TP thap hon entry, nen TP4 = bid - max(tp_usd)
+        max_tp_distance = max(self.tp_usd)
+        tp4_price = round(price_bid - max_tp_distance, 2)
+        log(f"  TP4 (furthest target) = {tp4_price}")
         
         for i in range(4):
             lot = lots[i]
@@ -465,10 +520,6 @@ class TradeManager:
             
             sl = round(entry_price + sl_distance, 2)
             tp = round(entry_price - tp_distance, 2)
-            
-            # Luu TP4 (ET4)
-            if i == 3:
-                tp4_price = tp
             
             request = {
                 "action": action,

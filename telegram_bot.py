@@ -5,12 +5,16 @@ import time
 import json
 
 # Telegram Bot Configuration
-BOT_TOKEN = "8388937091:AAFRyeKoIGeUnVxtoSskxhRc_pCS9I5QBCg"
+# BOT_TOKEN = "8388937091:AAFRyeKoIGeUnVxtoSskxhRc_pCS9I5QBCg"
+BOT_TOKEN = "8429353540:AAGNIPh-Lje4KAl_Ko57OS8TBWfgzpgaJWM"
+
+
 
 # Danh sach cac chat se nhan thong bao (ca nhan + nhom)
 CHAT_IDS = [
-   -5027471114,  # Nhom: Bot Trailing XAU
+#    -5027471114,  # Nhom: Bot Trailing XAU
     5638732845,   # Ca nhan: t
+    -1003467971094, # nhom scaping
 ]
 
 # Buffer de gom nhieu log lai gui 1 lan (tranh spam Telegram)

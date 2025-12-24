@@ -343,14 +343,22 @@ def force_open_cluster(symbol, direction):
     """
     global _trade_manager, _cluster_info
     
-    # Initialize TradeManager if not already done
-    if _trade_manager is None:
-        account_info = mt5.account_info()
-        if account_info is None:
-            log("[FORCE] Failed to get account info")
-            return False
-        _trade_manager = TradeManager(account_info.balance)
-        _trade_manager.symbol = symbol
+    # Luon tao moi TradeManager de lay capital va risk moi nhat
+    account_info = mt5.account_info()
+    if account_info is None:
+        log("[FORCE] Failed to get account info")
+        return False
+    
+    # Su dung fixed_capital neu co, khong thi dung balance thuc
+    from telegram_bot import get_bot_control
+    ctrl = get_bot_control()
+    fixed_cap = ctrl.get('fixed_capital')
+    nav = fixed_cap if fixed_cap else account_info.balance
+    
+    log(f"[DEBUG] fixed_capital={fixed_cap}, balance={account_info.balance}, using NAV={nav}")
+    
+    _trade_manager = TradeManager(nav)
+    _trade_manager.symbol = symbol
     
     if direction == 'buy':
         log("[FORCE] Mo BUY cluster theo lenh Telegram")
@@ -393,15 +401,6 @@ def process_trade(symbol, signal, buy_threshold=35, sell_threshold=35, bot_ctrl=
     if bot_ctrl is None:
         bot_ctrl = {'active': True, 'buy_active': True, 'sell_active': True}
     
-    # Initialize TradeManager if not already done
-    if _trade_manager is None:
-        account_info = mt5.account_info()
-        if account_info is None:
-            log("Failed to get account info")
-            return False, False
-        _trade_manager = TradeManager(account_info.balance)
-        _trade_manager.symbol = symbol
-    
     # Kiem tra co cluster dang mo khong
     cluster_open = is_cluster_open(symbol)
     cluster_timed_out = is_cluster_timeout(symbol)
@@ -431,6 +430,22 @@ def process_trade(symbol, signal, buy_threshold=35, sell_threshold=35, bot_ctrl=
     # Neu ca 2 chieu deu chua du diem hoac bi tat
     if buy_excess < 0 and sell_excess < 0:
         return False, False
+    
+    # Tao TradeManager moi voi capital va risk moi nhat
+    account_info = mt5.account_info()
+    if account_info is None:
+        log("Failed to get account info")
+        return False, False
+    
+    from telegram_bot import get_bot_control
+    ctrl = get_bot_control()
+    fixed_cap = ctrl.get('fixed_capital')
+    nav = fixed_cap if fixed_cap else account_info.balance
+    
+    log(f"[DEBUG] fixed_capital={fixed_cap}, balance={account_info.balance}, using NAV={nav}")
+    
+    _trade_manager = TradeManager(nav)
+    _trade_manager.symbol = symbol
     
     # Chon chieu co hieu diem cao hon
     if buy_excess >= sell_excess:
@@ -474,7 +489,11 @@ class TradeManager:
     def __init__(self, initial_nav):
         self.initial_nav = initial_nav
         self.symbol = "XAUUSD"
-        self.risk_percent = 0.1  # 1% NAV
+        
+        # Lay risk_percent tu bot_control
+        from telegram_bot import get_bot_control
+        ctrl = get_bot_control()
+        self.risk_percent = ctrl.get('risk_percent', 0.10)  # Mac dinh 10%
         
         # Khoang cach USD cho ET2, ET3, ET4
         self.et_offsets_usd = [0, 0.5, 1, 1.5]

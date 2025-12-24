@@ -40,6 +40,9 @@ _bot_control = {
     'accumulated_sell': 0,
     'buy_threshold': 35,
     'sell_threshold': 35,
+    # Cau hinh giao dich
+    'fixed_capital': None,    # Von co dinh (None = dung balance thuc)
+    'risk_percent': 0.10,     # % rui ro (0.01 = 1%, 0.10 = 10%)
 }
 _control_lock = threading.Lock()
 _last_update_id = 0
@@ -671,6 +674,62 @@ def _handle_command(cmd, args, chat_id):
             msg += f"Cach set: /threshold buy=50 sell=40"
             return msg
     
+    elif cmd in ['/capital', '/von', '/nav']:
+        # Set von co dinh (thay vi dung balance thuc)
+        # Format: /capital 10000 hoac /capital reset
+        if args:
+            arg = args[0].lower()
+            if arg in ['reset', 'auto', '0']:
+                set_bot_control(fixed_capital=None)
+                return "DA RESET VON\n-------------------\nSe su dung balance thuc cua tai khoan."
+            else:
+                try:
+                    capital = float(arg)
+                    if capital > 0:
+                        set_bot_control(fixed_capital=capital)
+                        return f"DA SET VON CO DINH\n-------------------\nVon: ${capital:.2f}\n(Khong phu thuoc balance thuc)"
+                    else:
+                        return "Von phai lon hon 0"
+                except:
+                    return "Sai format. VD: /capital 10000"
+        else:
+            ctrl = get_bot_control()
+            if ctrl['fixed_capital']:
+                msg = f"VON HIEN TAI\n-------------------\n"
+                msg += f"Von co dinh: ${ctrl['fixed_capital']:.2f}\n\n"
+            else:
+                msg = f"VON HIEN TAI\n-------------------\n"
+                msg += f"Dang dung balance thuc\n\n"
+            msg += f"Cach set: /capital 10000\n"
+            msg += f"Reset: /capital reset"
+            return msg
+    
+    elif cmd in ['/risk', '/ruiro', '/rr']:
+        # Set % rui ro
+        # Format: /risk 10 (= 10%) hoac /risk 0.1
+        if args:
+            try:
+                val = float(args[0])
+                # Neu nhap so nguyen lon hon 1 thi coi nhu %
+                if val > 1:
+                    risk = val / 100
+                else:
+                    risk = val
+                
+                if 0 < risk <= 1:
+                    set_bot_control(risk_percent=risk)
+                    return f"DA SET RUI RO\n-------------------\nRisk: {risk*100:.1f}% NAV"
+                else:
+                    return "Risk phai tu 0.01 den 1 (hoac 1% den 100%)"
+            except:
+                return "Sai format. VD: /risk 10 (= 10%)"
+        else:
+            ctrl = get_bot_control()
+            msg = f"RUI RO HIEN TAI\n-------------------\n"
+            msg += f"Risk: {ctrl['risk_percent']*100:.1f}% NAV\n\n"
+            msg += f"Cach set: /risk 10 (= 10%)"
+            return msg
+    
     elif cmd in ['/status', '/trangthai']:
         from trade import get_consecutive_sl_count
         
@@ -687,6 +746,11 @@ def _handle_command(cmd, args, chat_id):
         msg += f"Bot: {status}\n"
         msg += f"Buy: {buy_status} | Sell: {sell_status}\n"
         msg += f"SL lien tiep: {sl_count}/{sl_max}\n"
+        
+        # Hien thi cau hinh giao dich
+        capital_str = f"${ctrl['fixed_capital']:.0f}" if ctrl['fixed_capital'] else "Auto"
+        risk_str = f"{ctrl['risk_percent']*100:.0f}%"
+        msg += f"Von: {capital_str} | Risk: {risk_str}\n"
         
         # Hien thi diem tich luy
         msg += f"\nDIEM TICH LUY\n"
@@ -756,10 +820,8 @@ Bat/Tat bot:
 /start - Bat bot
 
 Bat/Tat 1 chieu:
-/stop_buy - Tat chieu Buy
-/stop_sell - Tat chieu Sell
-/start_buy - Bat chieu Buy
-/start_sell - Bat chieu Sell
+/stop_buy, /start_buy
+/stop_sell, /start_sell
 
 Mo lenh ngay:
 /buy - Mo Buy ngay
@@ -770,11 +832,11 @@ Dong lenh:
 /closepos - Chi dong positions
 /cancelpending - Chi huy pending
 
-Set diem (1 lan):
-/set buy=20 sell=15
-
-Set nguong (vinh vien):
+Cau hinh:
+/set buy=20 sell=15 (1 lan)
 /threshold buy=50 sell=40
+/capital 10000 (von co dinh)
+/risk 10 (= 10%)
 
 Xem trang thai:
 /status"""

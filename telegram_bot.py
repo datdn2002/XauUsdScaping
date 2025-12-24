@@ -3,6 +3,7 @@ from datetime import datetime
 import threading
 import time
 import json
+import MetaTrader5 as mt5
 
 # Telegram Bot Configuration
 BOT_TOKEN = "8388937091:AAFRyeKoIGeUnVxtoSskxhRc_pCS9I5QBCg"
@@ -34,6 +35,11 @@ _bot_control = {
     'next_sell_score': None,  # Diem sell cho cluster tiep theo (None = binh thuong)
     'reset_score': False,     # Flag de reset score
     'should_reset_bot': False, # Flag de reset bot (counter, stopped state)
+    # Diem tich luy hien tai (duoc cap nhat tu main.py)
+    'accumulated_buy': 0,
+    'accumulated_sell': 0,
+    'buy_threshold': 35,
+    'sell_threshold': 35,
 }
 _control_lock = threading.Lock()
 _last_update_id = 0
@@ -228,6 +234,15 @@ def check_reset_score():
     return False
 
 
+def update_accumulated_score(buy_score, sell_score, buy_threshold=35, sell_threshold=35):
+    """Cap nhat diem tich luy hien tai (goi tu main.py)"""
+    with _control_lock:
+        _bot_control['accumulated_buy'] = buy_score
+        _bot_control['accumulated_sell'] = sell_score
+        _bot_control['buy_threshold'] = buy_threshold
+        _bot_control['sell_threshold'] = sell_threshold
+
+
 def check_should_reset_bot():
     """Kiem tra co yeu cau reset bot khong (khi /start)"""
     with _control_lock:
@@ -249,6 +264,244 @@ def get_next_score_override():
         _bot_control['next_buy_score'] = None
         _bot_control['next_sell_score'] = None
         return buy, sell
+
+
+def close_all_positions():
+    """
+    Dong tat ca lenh dang mo va huy tat ca lenh pending.
+    Tinh profit tu lich su deals (chinh xac hon).
+    """
+    from datetime import datetime, timedelta
+    from trade import get_cluster_tickets, reset_cluster_info, get_current_cluster_direction, record_cluster_result
+    
+    symbol = "XAUUSD"
+    closed_count = 0
+    cancelled_count = 0
+    errors = []
+    position_tickets = []  # Luu lai ticket de tinh profit sau
+    
+    # Lay huong cluster TRUOC KHI dong lenh
+    cluster_direction = get_current_cluster_direction(symbol)
+    
+    # Thoi diem bat dau dong lenh
+    close_start_time = datetime.now()
+    
+    # 1. Dong tat ca positions dang mo
+    positions = mt5.positions_get(symbol=symbol)
+    if positions:
+        for pos in positions:
+            position_tickets.append(pos.ticket)
+            
+            # Xac dinh loai lenh dong
+            if pos.type == mt5.POSITION_TYPE_BUY:
+                order_type = mt5.ORDER_TYPE_SELL
+                price = mt5.symbol_info_tick(symbol).bid
+            else:
+                order_type = mt5.ORDER_TYPE_BUY
+                price = mt5.symbol_info_tick(symbol).ask
+            
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": pos.volume,
+                "type": order_type,
+                "position": pos.ticket,
+                "price": price,
+                "deviation": 20,
+                "magic": pos.magic,
+                "comment": "Close All",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            
+            result = mt5.order_send(request)
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                closed_count += 1
+            else:
+                errors.append(f"#{pos.ticket}: {result.comment if result else 'Unknown error'}")
+    
+    # 2. Huy tat ca pending orders
+    orders = mt5.orders_get(symbol=symbol)
+    if orders:
+        for order in orders:
+            request = {
+                "action": mt5.TRADE_ACTION_REMOVE,
+                "order": order.ticket,
+            }
+            result = mt5.order_send(request)
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                cancelled_count += 1
+            else:
+                errors.append(f"Pending #{order.ticket}: {result.comment if result else 'Unknown error'}")
+    
+    # Tao message ket qua
+    if closed_count == 0 and cancelled_count == 0:
+        return "Khong co lenh nao de dong."
+    
+    # 3. Tinh profit tu lich su deals (sau khi dong)
+    import time
+    time.sleep(0.5)  # Cho MT5 cap nhat lich su
+    
+    total_profit = 0.0
+    deals_counted = 0
+    
+    # Lay profit tu cac position vua dong
+    for ticket in position_tickets:
+        deals = mt5.history_deals_get(position=ticket)
+        if deals:
+            for deal in deals:
+                if deal.entry == mt5.DEAL_ENTRY_OUT:
+                    profit = deal.profit + deal.commission + deal.swap
+                    total_profit += profit
+                    deals_counted += 1
+    
+    # Ghi nhan ket qua SL/TP va dem SL lien tiep
+    if closed_count > 0:
+        direction = cluster_direction or "manual"
+        is_profit = total_profit > 0
+        record_cluster_result(direction, is_profit, total_profit)
+    
+    # Reset cluster info sau khi dong het
+    reset_cluster_info()
+    
+    msg = f"DA DONG TAT CA LENH\n"
+    msg += f"-------------------\n"
+    msg += f"Positions dong: {closed_count}\n"
+    msg += f"Pending huy: {cancelled_count}\n"
+    msg += f"Tong profit: ${total_profit:.2f}\n"
+    
+    if errors:
+        msg += f"\nLoi: {len(errors)} lenh\n"
+        for e in errors[:3]:  # Chi hien 3 loi dau
+            msg += f"   - {e}\n"
+    
+    return msg
+
+
+def close_positions_only():
+    """
+    Chi dong cac lenh dang mo (positions), khong huy pending.
+    """
+    from trade import reset_cluster_info, get_current_cluster_direction, record_cluster_result
+    
+    symbol = "XAUUSD"
+    closed_count = 0
+    errors = []
+    position_tickets = []
+    
+    positions = mt5.positions_get(symbol=symbol)
+    if not positions:
+        return "Khong co lenh nao dang mo."
+    
+    # Lay huong cluster TRUOC KHI dong lenh
+    cluster_direction = get_current_cluster_direction(symbol)
+    
+    for pos in positions:
+        position_tickets.append(pos.ticket)
+        
+        if pos.type == mt5.POSITION_TYPE_BUY:
+            order_type = mt5.ORDER_TYPE_SELL
+            price = mt5.symbol_info_tick(symbol).bid
+        else:
+            order_type = mt5.ORDER_TYPE_BUY
+            price = mt5.symbol_info_tick(symbol).ask
+        
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": pos.volume,
+            "type": order_type,
+            "position": pos.ticket,
+            "price": price,
+            "deviation": 20,
+            "magic": pos.magic,
+            "comment": "Close Pos",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        
+        result = mt5.order_send(request)
+        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+            closed_count += 1
+        else:
+            errors.append(f"#{pos.ticket}: {result.comment if result else 'Unknown error'}")
+    
+    # Tinh profit
+    import time
+    time.sleep(0.5)
+    
+    total_profit = 0.0
+    for ticket in position_tickets:
+        deals = mt5.history_deals_get(position=ticket)
+        if deals:
+            for deal in deals:
+                if deal.entry == mt5.DEAL_ENTRY_OUT:
+                    total_profit += deal.profit + deal.commission + deal.swap
+    
+    # Ghi nhan ket qua SL/TP va dem SL lien tiep
+    if closed_count > 0:
+        direction = cluster_direction or "manual"
+        is_profit = total_profit > 0
+        record_cluster_result(direction, is_profit, total_profit)
+    
+    # Check con pending khong, neu khong thi reset cluster
+    orders = mt5.orders_get(symbol=symbol)
+    if not orders:
+        reset_cluster_info()
+    
+    msg = f"DA DONG POSITIONS\n"
+    msg += f"-------------------\n"
+    msg += f"So lenh dong: {closed_count}\n"
+    msg += f"Profit: ${total_profit:.2f}\n"
+    
+    if errors:
+        msg += f"\nLoi: {len(errors)} lenh\n"
+        for e in errors[:3]:
+            msg += f"   - {e}\n"
+    
+    return msg
+
+
+def cancel_pending_only():
+    """
+    Chi huy cac lenh pending, khong dong positions.
+    """
+    from trade import reset_cluster_info
+    
+    symbol = "XAUUSD"
+    cancelled_count = 0
+    errors = []
+    
+    orders = mt5.orders_get(symbol=symbol)
+    if not orders:
+        return "Khong co lenh pending nao."
+    
+    for order in orders:
+        request = {
+            "action": mt5.TRADE_ACTION_REMOVE,
+            "order": order.ticket,
+        }
+        result = mt5.order_send(request)
+        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+            cancelled_count += 1
+        else:
+            errors.append(f"#{order.ticket}: {result.comment if result else 'Unknown error'}")
+    
+    # Check con position khong, neu khong thi reset cluster
+    positions = mt5.positions_get(symbol=symbol)
+    if not positions:
+        reset_cluster_info()
+    
+    msg = f"DA HUY PENDING ORDERS\n"
+    msg += f"-------------------\n"
+    msg += f"So lenh huy: {cancelled_count}\n"
+    
+    if errors:
+        msg += f"\nLoi: {len(errors)} lenh\n"
+        for e in errors[:3]:
+            msg += f"   - {e}\n"
+    
+    return msg
 
 
 def _parse_command(text):
@@ -353,56 +606,177 @@ def _handle_command(cmd, args, chat_id):
                 next_sell_score=sell_score,
                 active=True
             )
-            msg = "✅ Da set diem cho cluster tiep theo:\n"
+            msg = "Da set diem cho cluster tiep theo:\n"
             if buy_score is not None:
                 msg += f"   Buy: {buy_score}\n"
             if sell_score is not None:
                 msg += f"   Sell: {sell_score}"
             return msg
         else:
-            return "❌ Sai format. VD: /set buy=20 sell=15"
+            return "Sai format. VD: /set buy=20 sell=15"
+    
+    elif cmd in ['/threshold', '/nguong', '/th']:
+        # Set nguong diem can thiet de mo lenh (ap dung vinh vien)
+        # Format: /threshold buy=50 sell=40 hoac /threshold 50 40
+        buy_thresh = None
+        sell_thresh = None
+        
+        args_str = ' '.join(args).replace(' = ', '=').replace('= ', '=').replace(' =', '=')
+        parts = args_str.split()
+        
+        for part in parts:
+            if '=' in part:
+                key, val = part.split('=', 1)
+                try:
+                    if key.lower() == 'buy':
+                        buy_thresh = int(val)
+                    elif key.lower() == 'sell':
+                        sell_thresh = int(val)
+                except:
+                    pass
+            else:
+                try:
+                    val = int(part)
+                    if buy_thresh is None:
+                        buy_thresh = val
+                    elif sell_thresh is None:
+                        sell_thresh = val
+                except:
+                    pass
+        
+        if buy_thresh is not None or sell_thresh is not None:
+            # Lay gia tri hien tai neu khong set
+            ctrl = get_bot_control()
+            if buy_thresh is None:
+                buy_thresh = ctrl['buy_threshold']
+            if sell_thresh is None:
+                sell_thresh = ctrl['sell_threshold']
+            
+            set_bot_control(
+                buy_threshold=buy_thresh,
+                sell_threshold=sell_thresh
+            )
+            msg = f"DA SET NGUONG DIEM\n"
+            msg += f"-------------------\n"
+            msg += f"Buy: {buy_thresh} diem\n"
+            msg += f"Sell: {sell_thresh} diem\n"
+            msg += f"(Ap dung cho tat ca lenh sau nay)"
+            return msg
+        else:
+            ctrl = get_bot_control()
+            msg = f"NGUONG DIEM HIEN TAI\n"
+            msg += f"-------------------\n"
+            msg += f"Buy: {ctrl['buy_threshold']} diem\n"
+            msg += f"Sell: {ctrl['sell_threshold']} diem\n\n"
+            msg += f"Cach set: /threshold buy=50 sell=40"
+            return msg
     
     elif cmd in ['/status', '/trangthai']:
-        ctrl = get_bot_control()
-        status = "🟢 DANG CHAY" if ctrl['active'] else "🔴 DA TAT"
-        buy_status = "✅" if ctrl['buy_active'] else "❌"
-        sell_status = "✅" if ctrl['sell_active'] else "❌"
+        from trade import get_consecutive_sl_count
         
-        msg = f"📊 <b>TRANG THAI BOT</b>\n"
-        msg += f"━━━━━━━━━━━━━━━\n"
+        ctrl = get_bot_control()
+        status = "DANG CHAY" if ctrl['active'] else "DA TAT"
+        buy_status = "ON" if ctrl['buy_active'] else "OFF"
+        sell_status = "ON" if ctrl['sell_active'] else "OFF"
+        
+        # Lay so lan SL lien tiep
+        sl_count, sl_max = get_consecutive_sl_count()
+        
+        msg = f"TRANG THAI BOT\n"
+        msg += f"-------------------\n"
         msg += f"Bot: {status}\n"
         msg += f"Buy: {buy_status} | Sell: {sell_status}\n"
+        msg += f"SL lien tiep: {sl_count}/{sl_max}\n"
+        
+        # Hien thi diem tich luy
+        msg += f"\nDIEM TICH LUY\n"
+        msg += f"-------------------\n"
+        buy_score = ctrl['accumulated_buy']
+        sell_score = ctrl['accumulated_sell']
+        buy_thresh = ctrl['buy_threshold']
+        sell_thresh = ctrl['sell_threshold']
+        msg += f"Buy: {buy_score}/{buy_thresh}\n"
+        msg += f"Sell: {sell_score}/{sell_thresh}\n"
+        
+        # Hien thi lenh dang mo
+        symbol = "XAUUSD"
+        positions = mt5.positions_get(symbol=symbol)
+        orders = mt5.orders_get(symbol=symbol)
+        
+        if positions or orders:
+            msg += f"\nLENH DANG MO\n"
+            msg += f"-------------------\n"
+            
+            if positions:
+                total_profit = 0.0
+                for pos in positions:
+                    pos_type = "BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL"
+                    profit = pos.profit
+                    total_profit += profit
+                    profit_str = f"+${profit:.2f}" if profit >= 0 else f"-${abs(profit):.2f}"
+                    msg += f"#{pos.ticket} {pos_type} {pos.volume} @ {pos.price_open} | {profit_str}\n"
+                msg += f"Tong: ${total_profit:.2f}\n"
+            
+            if orders:
+                msg += f"\nPending: {len(orders)} lenh\n"
+                for order in orders:
+                    order_type = "BUY_LMT" if order.type == mt5.ORDER_TYPE_BUY_LIMIT else "SELL_LMT"
+                    msg += f"  #{order.ticket} {order_type} {order.volume_current} @ {order.price_open}\n"
+        else:
+            msg += f"\nKhong co lenh nao dang mo.\n"
         
         if ctrl['next_buy_score'] or ctrl['next_sell_score']:
-            msg += f"\n⏳ Diem set cho cluster tiep theo:\n"
+            msg += f"\nDiem set cho cluster tiep:\n"
             msg += f"   Buy: {ctrl['next_buy_score'] or 'N/A'}\n"
             msg += f"   Sell: {ctrl['next_sell_score'] or 'N/A'}"
         
         return msg
     
+    elif cmd in ['/closeall', '/dongtatca', '/close']:
+        # Dong tat ca lenh dang mo va pending
+        result = close_all_positions()
+        return result
+    
+    elif cmd in ['/closepos', '/dongpos']:
+        # Chi dong positions, khong huy pending
+        result = close_positions_only()
+        return result
+    
+    elif cmd in ['/cancelpending', '/huypending', '/cancel']:
+        # Chi huy pending orders
+        result = cancel_pending_only()
+        return result
+    
     elif cmd in ['/help', '/huongdan']:
-        msg = """📖 <b>HUONG DAN SU DUNG</b>
-━━━━━━━━━━━━━━━
+        msg = """HUONG DAN SU DUNG
+-------------------
 
-<b>Bat/Tat bot:</b>
+Bat/Tat bot:
 /stop - Tat bot, reset score
 /start - Bat bot
 
-<b>Bat/Tat 1 chieu:</b>
+Bat/Tat 1 chieu:
 /stop_buy - Tat chieu Buy
 /stop_sell - Tat chieu Sell
 /start_buy - Bat chieu Buy
 /start_sell - Bat chieu Sell
 
-<b>Mo lenh ngay:</b>
+Mo lenh ngay:
 /buy - Mo Buy ngay
 /sell - Mo Sell ngay
 
-<b>Set diem:</b>
-/set buy=20 sell=15
-(Ap dung cho cluster tiep theo)
+Dong lenh:
+/closeall - Dong tat ca
+/closepos - Chi dong positions
+/cancelpending - Chi huy pending
 
-<b>Xem trang thai:</b>
+Set diem (1 lan):
+/set buy=20 sell=15
+
+Set nguong (vinh vien):
+/threshold buy=50 sell=40
+
+Xem trang thai:
 /status"""
         return msg
     

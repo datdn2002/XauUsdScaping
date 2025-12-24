@@ -5,17 +5,16 @@ from telegram_bot import log, flush_logs
 # Global TradeManager instance
 _trade_manager = None
 
-# Theo doi so lenh mo lien tiep cung chieu
-_consecutive_trades = {
-    'count': 0,
-    'last_direction': None
+# Theo doi so lan Stop Loss lien tiep
+_consecutive_sl = {
+    'count': 0  # So lan SL lien tiep (reset khi co TP)
 }
 
 # Trang thai bot
 _bot_stopped = False
 
-# Gioi han so lenh lien tiep cung chieu truoc khi dung
-MAX_CONSECUTIVE_TRADES = 3
+# Gioi han so lan SL lien tiep truoc khi dung bot
+MAX_CONSECUTIVE_SL = 3
 
 # Luu thoi gian mo cluster va TP4
 _cluster_info = {
@@ -23,6 +22,15 @@ _cluster_info = {
     'direction': None,
     'tp4_price': None,
     'entry_price': None  # Gia vao ET1
+}
+
+# Luu ticket ID cua cac ET khi mo cluster
+_cluster_tickets = {
+    'et1': None,  # Market order - position ticket
+    'et2': None,  # Pending order ticket (se chuyen thanh position khi khop)
+    'et3': None,
+    'et4': None,
+    'open_time': None  # Thoi gian mo cluster de loc deal history
 }
 
 # Thoi gian timeout cluster (6 tieng = 21600 giay)
@@ -52,11 +60,53 @@ def is_cluster_open(symbol="XAUUSD"):
 
 def reset_cluster_info():
     """Reset thong tin cluster khi cluster dong het"""
-    global _cluster_info
+    global _cluster_info, _cluster_tickets
     _cluster_info['open_time'] = None
     _cluster_info['direction'] = None
     _cluster_info['tp4_price'] = None
     _cluster_info['entry_price'] = None
+    # Reset tickets
+    _cluster_tickets['et1'] = None
+    _cluster_tickets['et2'] = None
+    _cluster_tickets['et3'] = None
+    _cluster_tickets['et4'] = None
+    _cluster_tickets['open_time'] = None
+
+
+def get_cluster_tickets():
+    """Lay danh sach ticket cua cluster hien tai"""
+    return _cluster_tickets.copy()
+
+
+def get_cluster_profit_from_history():
+    """
+    Tinh tong profit cua cluster tu lich su deals.
+    Chi tinh nhung deals thuoc cluster hien tai (theo thoi gian mo).
+    """
+    from datetime import datetime, timedelta
+    
+    open_time = _cluster_tickets.get('open_time')
+    if not open_time:
+        return 0.0
+    
+    # Lay lich su deals tu thoi diem mo cluster
+    now = datetime.now()
+    
+    # Tim deals theo magic numbers
+    magic_numbers = [1001, 1002, 1003, 1004]
+    total_profit = 0.0
+    deals_found = 0
+    
+    deals = mt5.history_deals_get(open_time, now)
+    if deals:
+        for deal in deals:
+            # Chi lay deals OUT (dong lenh) va magic phu hop
+            if deal.magic in magic_numbers and deal.entry == mt5.DEAL_ENTRY_OUT:
+                profit = deal.profit + deal.commission + deal.swap
+                total_profit += profit
+                deals_found += 1
+    
+    return total_profit, deals_found
 
 
 def check_cluster_result_and_record(symbol="XAUUSD"):
@@ -113,8 +163,8 @@ def check_cluster_result_and_record(symbol="XAUUSD"):
     
     log(f"[SL_CHECK] Cluster {direction.upper()} dong: {len(recent_deals)} deals, profit=${total_profit:.2f}")
     
-    # Ghi nhan ket qua
-    record_cluster_result(direction, is_profit)
+    # Ghi nhan ket qua (va check 3 SL lien tiep)
+    record_cluster_result(direction, is_profit, total_profit)
     
     return direction, is_profit, total_profit
 
@@ -137,42 +187,42 @@ def get_current_cluster_direction(symbol="XAUUSD"):
 
 def record_trade_opened(direction):
     """
-    Ghi nhan khi mo lenh moi.
-    Neu 3 lan lien tiep cung chieu -> dung bot.
+    Ghi nhan khi mo lenh moi (chi log, khong anh huong counter).
     """
-    global _consecutive_trades, _bot_stopped
-    
-    if direction == _consecutive_trades['last_direction']:
-        # Cung chieu -> tang dem
-        _consecutive_trades['count'] += 1
-    else:
-        # Khac chieu -> reset va bat dau dem chieu moi
-        _consecutive_trades['count'] = 1
-        _consecutive_trades['last_direction'] = direction
-    
-    log(f"[TRADE] Mo lenh {direction.upper()} - dem: {_consecutive_trades['count']}/{MAX_CONSECUTIVE_TRADES}")
-    
-    # Kiem tra 3 lan lien tiep
-    if _consecutive_trades['count'] >= MAX_CONSECUTIVE_TRADES:
-        _bot_stopped = True
-        log(f"[TRADE] !!! BOT DUNG LAI - {MAX_CONSECUTIVE_TRADES} lan {direction.upper()} lien tiep !!!")
-        flush_logs()
+    log(f"[TRADE] Mo lenh {direction.upper()}")
 
 
-def record_cluster_result(direction, is_profit):
+def record_cluster_result(direction, is_profit, total_profit=0):
     """
     Ghi nhan ket qua cluster (loi/lo).
-    Chi dung de log, khong anh huong den viec dung bot.
+    Neu 3 lan SL (profit < 0) lien tiep -> dung bot.
     """
+    global _consecutive_sl, _bot_stopped
+    
     if is_profit:
-        log(f"[TRADE] Cluster {direction.upper()} CHOT LOI")
+        # Chot loi -> reset counter
+        _consecutive_sl['count'] = 0
+        log(f"[TRADE] Cluster {direction.upper()} CHOT LOI (${total_profit:.2f}) - Reset SL counter")
     else:
-        log(f"[TRADE] Cluster {direction.upper()} CHOT LO")
+        # Chot lo -> tang counter
+        _consecutive_sl['count'] += 1
+        log(f"[TRADE] Cluster {direction.upper()} CHOT LO (${total_profit:.2f}) - SL lien tiep: {_consecutive_sl['count']}/{MAX_CONSECUTIVE_SL}")
+        
+        # Kiem tra 3 lan SL lien tiep
+        if _consecutive_sl['count'] >= MAX_CONSECUTIVE_SL:
+            _bot_stopped = True
+            log(f"[TRADE] !!! BOT DUNG LAI - {MAX_CONSECUTIVE_SL} lan SL lien tiep !!!")
+            flush_logs()
 
 
 def is_bot_stopped():
     """Kiem tra bot co bi dung khong"""
     return _bot_stopped
+
+
+def get_consecutive_sl_count():
+    """Lay so lan SL lien tiep hien tai"""
+    return _consecutive_sl['count'], MAX_CONSECUTIVE_SL
 
 
 def is_cluster_timeout(symbol="XAUUSD"):
@@ -275,10 +325,10 @@ def check_and_cancel_pending_if_past_tp4(symbol="XAUUSD", accumulated_score=None
 
 def reset_bot():
     """Reset bot de chay lai"""
-    global _bot_stopped, _consecutive_trades
+    global _bot_stopped, _consecutive_sl
     _bot_stopped = False
-    _consecutive_trades = {'count': 0, 'last_direction': None}
-    log("[TRADE] Bot da duoc reset")
+    _consecutive_sl = {'count': 0}
+    log("[TRADE] Bot da duoc reset - SL counter = 0")
 
 
 def force_open_cluster(symbol, direction):
@@ -424,14 +474,14 @@ class TradeManager:
     def __init__(self, initial_nav):
         self.initial_nav = initial_nav
         self.symbol = "XAUUSD"
-        self.risk_percent = 0.01  # 1% NAV
+        self.risk_percent = 0.1  # 1% NAV
         
         # Khoang cach USD cho ET2, ET3, ET4
         self.et_offsets_usd = [0, 0.5, 1, 1.5]
         
         # SL/TP cho tung ET (USD)
         self.sl_usd = [9, 10, 11, 12]
-        self.tp_usd = [1, 1, 1, 1]
+        self.tp_usd = [3, 5, 7, 11]
         
         # Phan bo risk: 20%, 20%, 40%, 20%
         self.risk_allocation = [0.20, 0.20, 0.40, 0.20]
@@ -479,6 +529,9 @@ class TradeManager:
         Mo cluster BUY.
         Returns: (entry_price_et1, tp4_price)
         """
+        global _cluster_tickets
+        from datetime import datetime
+        
         tick = mt5.symbol_info_tick(self.symbol)
         if tick is None:
             log("Failed to get symbol tick info")
@@ -500,6 +553,9 @@ class TradeManager:
         max_tp_distance = max(self.tp_usd)
         tp4_price = round(price_ask + max_tp_distance, 2)
         log(f"  TP4 (furthest target) = {tp4_price}")
+        
+        # Luu thoi gian mo cluster
+        _cluster_tickets['open_time'] = datetime.now()
         
         for i in range(4):
             lot = lots[i]
@@ -537,10 +593,16 @@ class TradeManager:
             result = mt5.order_send(request)
             
             order_type_str = "Market" if i == 0 else "Limit"
+            et_key = f"et{i+1}"
+            
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                log(f"  [OK] ET{i+1} ({order_type_str}): {lot} lots @ {entry_price} | SL={sl}, TP={tp}")
+                # Market order - luu deal ticket (position)
+                _cluster_tickets[et_key] = result.deal if result.deal else result.order
+                log(f"  [OK] ET{i+1} ({order_type_str}): {lot} lots @ {entry_price} | SL={sl}, TP={tp} | Ticket #{_cluster_tickets[et_key]}")
             elif result and result.retcode == mt5.TRADE_RETCODE_PLACED:
-                log(f"  [OK] ET{i+1} ({order_type_str}): Pending {lot} lots @ {entry_price} | SL={sl}, TP={tp}")
+                # Pending order - luu order ticket
+                _cluster_tickets[et_key] = result.order
+                log(f"  [OK] ET{i+1} ({order_type_str}): Pending {lot} lots @ {entry_price} | SL={sl}, TP={tp} | Order #{result.order}")
             else:
                 error = result.comment if result else "No response"
                 retcode = result.retcode if result else "N/A"
@@ -553,6 +615,9 @@ class TradeManager:
         Mo cluster SELL.
         Returns: (entry_price_et1, tp4_price)
         """
+        global _cluster_tickets
+        from datetime import datetime
+        
         tick = mt5.symbol_info_tick(self.symbol)
         if tick is None:
             log("Failed to get symbol tick info")
@@ -574,6 +639,9 @@ class TradeManager:
         max_tp_distance = max(self.tp_usd)
         tp4_price = round(price_bid - max_tp_distance, 2)
         log(f"  TP4 (furthest target) = {tp4_price}")
+        
+        # Luu thoi gian mo cluster
+        _cluster_tickets['open_time'] = datetime.now()
         
         for i in range(4):
             lot = lots[i]
@@ -611,10 +679,16 @@ class TradeManager:
             result = mt5.order_send(request)
             
             order_type_str = "Market" if i == 0 else "Limit"
+            et_key = f"et{i+1}"
+            
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                log(f"  [OK] ET{i+1} ({order_type_str}): {lot} lots @ {entry_price} | SL={sl}, TP={tp}")
+                # Market order - luu deal ticket (position)
+                _cluster_tickets[et_key] = result.deal if result.deal else result.order
+                log(f"  [OK] ET{i+1} ({order_type_str}): {lot} lots @ {entry_price} | SL={sl}, TP={tp} | Ticket #{_cluster_tickets[et_key]}")
             elif result and result.retcode == mt5.TRADE_RETCODE_PLACED:
-                log(f"  [OK] ET{i+1} ({order_type_str}): Pending {lot} lots @ {entry_price} | SL={sl}, TP={tp}")
+                # Pending order - luu order ticket
+                _cluster_tickets[et_key] = result.order
+                log(f"  [OK] ET{i+1} ({order_type_str}): Pending {lot} lots @ {entry_price} | SL={sl}, TP={tp} | Order #{result.order}")
             else:
                 error = result.comment if result else "No response"
                 retcode = result.retcode if result else "N/A"

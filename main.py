@@ -5,16 +5,19 @@ from trade import process_trade, is_bot_stopped, is_cluster_open, check_and_canc
 from telegram_bot import (
     log, flush_logs, 
     get_bot_control, set_bot_control, check_force_trade, check_reset_score, get_next_score_override,
-    check_should_reset_bot
+    check_should_reset_bot, update_accumulated_score
 )
 from be_manager import check_be
 
 SYMBOL = "XAUUSD"
 TIMEFRAME = mt5.TIMEFRAME_M1
 
-# Nguong diem de mo lenh
-BUY_THRESHOLD = 35
-SELL_THRESHOLD = 35
+# Nguong diem mac dinh (se duoc cap nhat tu Telegram /threshold)
+DEFAULT_BUY_THRESHOLD = 35
+DEFAULT_SELL_THRESHOLD = 35
+
+# Khoi tao nguong ban dau
+set_bot_control(buy_threshold=DEFAULT_BUY_THRESHOLD, sell_threshold=DEFAULT_SELL_THRESHOLD)
 
 # ========== KET NOI ==========
 
@@ -44,14 +47,17 @@ while True:
         log(">>> BOT DA DUOC RESET (tu /start) <<<")
         flush_logs()
     
+    # Kiem tra trang thai bot va lay nguong diem
+    bot_ctrl = get_bot_control()
+    buy_threshold = bot_ctrl['buy_threshold']
+    sell_threshold = bot_ctrl['sell_threshold']
+    
     # Kiem tra yeu cau reset score
     if check_reset_score():
         log(">>> RESET SCORE (tu Telegram) <<<")
         accumulated_score = Signal()
+        update_accumulated_score(0, 0, buy_threshold, sell_threshold)
         flush_logs()
-    
-    # Kiem tra trang thai bot
-    bot_ctrl = get_bot_control()
     
     # Kiem tra yeu cau mo lenh ngay
     force_direction = check_force_trade()
@@ -74,7 +80,7 @@ while True:
     # Kiem tra bot co bi dung khong (3 lenh lien tiep hoac tu Telegram)
     if is_bot_stopped() or not bot_ctrl['active']:
         if is_bot_stopped() and not bot_stopped_logged:
-            log("[MAIN] Bot da dung - 3 lenh lien tiep cung chieu. Dung /start de bat lai.")
+            log("[MAIN] Bot da dung - 3 lan SL lien tiep. Dung /start de bat lai.")
             # Sync trang thai voi telegram_bot
             set_bot_control(active=False)
             flush_logs()
@@ -90,7 +96,7 @@ while True:
     
     # Chi kiem tra huy lenh pending khi cluster dang mo
     if cluster_open_now:
-        check_and_cancel_pending_if_past_tp4(SYMBOL, accumulated_score, BUY_THRESHOLD, SELL_THRESHOLD)
+        check_and_cancel_pending_if_past_tp4(SYMBOL, accumulated_score, buy_threshold, sell_threshold)
     
     if was_cluster_open and not cluster_open_now:
         # Cluster vua dong xong!
@@ -104,12 +110,12 @@ while True:
         log("[INFO] Kiem tra mo lenh moi...")
         
         # Kiem tra co du diem khong
-        buy_diff = accumulated_score.buy_score - BUY_THRESHOLD
-        sell_diff = accumulated_score.sell_score - SELL_THRESHOLD
+        buy_diff = accumulated_score.buy_score - buy_threshold
+        sell_diff = accumulated_score.sell_score - sell_threshold
         
         if buy_diff >= 0 or sell_diff >= 0:
-            log(f"[INFO] Du diem! Buy={accumulated_score.buy_score}/{BUY_THRESHOLD}, Sell={accumulated_score.sell_score}/{SELL_THRESHOLD}")
-            trade_executed, should_reset = process_trade(SYMBOL, accumulated_score, BUY_THRESHOLD, SELL_THRESHOLD, bot_ctrl)
+            log(f"[INFO] Du diem! Buy={accumulated_score.buy_score}/{buy_threshold}, Sell={accumulated_score.sell_score}/{sell_threshold}")
+            trade_executed, should_reset = process_trade(SYMBOL, accumulated_score, buy_threshold, sell_threshold, bot_ctrl)
             if should_reset:
                 log(">>> RESET SCORE <<<")
                 accumulated_score = Signal()
@@ -146,9 +152,12 @@ while True:
         accumulated_score.buy_score += current_signal.buy_score
         accumulated_score.sell_score += current_signal.sell_score
         
+        # Cap nhat diem tich luy cho Telegram /status
+        update_accumulated_score(accumulated_score.buy_score, accumulated_score.sell_score, buy_threshold, sell_threshold)
+        
         # Hien thi diem dang xx/xx
         log(f"This candle: Buy +{current_signal.buy_score} | Sell +{current_signal.sell_score}")
-        log(f"ACCUMULATED: Buy {accumulated_score.buy_score}/{BUY_THRESHOLD} | Sell {accumulated_score.sell_score}/{SELL_THRESHOLD}")
+        log(f"ACCUMULATED: Buy {accumulated_score.buy_score}/{buy_threshold} | Sell {accumulated_score.sell_score}/{sell_threshold}")
         
         # Hien thi trang thai cluster va bot
         if is_cluster_open(SYMBOL):
@@ -163,12 +172,13 @@ while True:
             log(f"[INFO] {' | '.join(status)}")
 
         # Process trade - tra ve (trade_executed, should_reset)
-        trade_executed, should_reset = process_trade(SYMBOL, accumulated_score, BUY_THRESHOLD, SELL_THRESHOLD, bot_ctrl)
+        trade_executed, should_reset = process_trade(SYMBOL, accumulated_score, buy_threshold, sell_threshold, bot_ctrl)
         
         # Reset score neu can
         if should_reset:
             log(">>> RESET SCORE <<<")
             accumulated_score = Signal()
+            update_accumulated_score(0, 0, buy_threshold, sell_threshold)
             flush_logs()
 
     time.sleep(2)

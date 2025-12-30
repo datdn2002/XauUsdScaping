@@ -1,4 +1,6 @@
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from datetime import datetime
 import threading
 import time
@@ -7,6 +9,33 @@ import MetaTrader5 as mt5
 
 # Telegram Bot Configuration
 BOT_TOKEN = "8388937091:AAFRyeKoIGeUnVxtoSskxhRc_pCS9I5QBCg"
+
+# ========== SESSION VỚI RETRY VÀ CONNECTION POOLING ==========
+def create_session():
+    """Tạo session với retry và connection pooling"""
+    session = requests.Session()
+    
+    # Cấu hình retry: thử lại 3 lần khi timeout hoặc lỗi kết nối
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,  # Chờ 1s, 2s, 4s giữa các lần thử
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "POST"]
+    )
+    
+    adapter = HTTPAdapter(
+        max_retries=retry_strategy,
+        pool_connections=10,
+        pool_maxsize=10
+    )
+    
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    
+    return session
+
+# Session toàn cục
+_session = create_session()
 # BOT_TOKEN = "8429353540:AAGNIPh-Lje4KAl_Ko57OS8TBWfgzpgaJWM"
 
 
@@ -55,7 +84,8 @@ def get_chat_id():
     """
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
     try:
-        response = requests.get(url, timeout=10)
+        # Sử dụng session với retry
+        response = _session.get(url, timeout=15)
         data = response.json()
         
         if data.get("ok") and data.get("result"):
@@ -96,11 +126,16 @@ def send_telegram(message, chat_id=None):
         }
         
         try:
-            response = requests.post(url, json=payload, timeout=10)
+            # Sử dụng session với retry thay vì requests trực tiếp
+            response = _session.post(url, json=payload, timeout=15)
             if response.status_code == 200:
                 success = True
-        except:
-            pass
+        except requests.exceptions.Timeout:
+            print(f"[TELE] Send timeout to {target}, will retry...")
+        except requests.exceptions.ConnectionError:
+            print(f"[TELE] Connection error to {target}")
+        except Exception as e:
+            print(f"[TELE] Send error: {e}")
     
     return success
 
@@ -854,16 +889,24 @@ def _poll_commands():
     
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
     
+    # Đếm số lần lỗi liên tiếp để điều chỉnh thời gian chờ
+    consecutive_errors = 0
+    max_wait = 60  # Tối đa chờ 60 giây khi lỗi liên tục
+    
     while True:
         try:
             params = {
                 "offset": _last_update_id + 1,
-                "timeout": 10,
+                "timeout": 30,  # Long polling timeout (Telegram sẽ giữ kết nối 30s)
                 "allowed_updates": ["message"]
             }
             
-            response = requests.get(url, params=params, timeout=15)
+            # Sử dụng session với retry, timeout cao hơn cho long polling
+            response = _session.get(url, params=params, timeout=35)
             data = response.json()
+            
+            # Reset counter khi thành công
+            consecutive_errors = 0
             
             if data.get("ok") and data.get("result"):
                 for update in data["result"]:
@@ -881,10 +924,26 @@ def _poll_commands():
                                 send_telegram(response_msg, chat_id)
                                 print(f"[CMD] {cmd} -> {response_msg[:50]}...")
         
-        except Exception as e:
-            print(f"[CMD] Poll error: {e}")
+        except requests.exceptions.Timeout:
+            # Timeout là bình thường với long polling, không cần báo lỗi
+            consecutive_errors += 1
+            if consecutive_errors >= 5:
+                print(f"[CMD] Timeout lien tuc {consecutive_errors} lan, kiem tra mang...")
         
-        time.sleep(2)
+        except requests.exceptions.ConnectionError as e:
+            consecutive_errors += 1
+            print(f"[CMD] Loi ket noi (lan {consecutive_errors}): Mat mang?")
+        
+        except Exception as e:
+            consecutive_errors += 1
+            print(f"[CMD] Poll error (lan {consecutive_errors}): {e}")
+        
+        # Backoff khi lỗi liên tục: chờ lâu hơn
+        if consecutive_errors > 0:
+            wait_time = min(2 * consecutive_errors, max_wait)
+            time.sleep(wait_time)
+        else:
+            time.sleep(1)  # Chờ ngắn khi OK
 
 
 # Start command polling thread

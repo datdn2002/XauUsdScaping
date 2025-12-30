@@ -10,7 +10,7 @@ from telegram_bot import (
 from be_manager import check_be
 
 SYMBOL = "XAUUSD"
-TIMEFRAME = mt5.TIMEFRAME_M1
+TIMEFRAME = mt5.TIMEFRAME_H1
 
 # Nguong diem mac dinh (se duoc cap nhat tu Telegram /threshold)
 DEFAULT_BUY_THRESHOLD = 35

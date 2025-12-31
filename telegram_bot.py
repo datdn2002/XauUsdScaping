@@ -8,8 +8,8 @@ import json
 import MetaTrader5 as mt5
 
 # Telegram Bot Configuration
-# BOT_TOKEN = "8388937091:AAFRyeKoIGeUnVxtoSskxhRc_pCS9I5QBCg"
-BOT_TOKEN = "8429353540:AAGNIPh-Lje4KAl_Ko57OS8TBWfgzpgaJWM"
+BOT_TOKEN = "8388937091:AAFRyeKoIGeUnVxtoSskxhRc_pCS9I5QBCg"
+# BOT_TOKEN = "8429353540:AAGNIPh-Lje4KAl_Ko57OS8TBWfgzpgaJWM"
 
 # ========== SESSION VỚI RETRY VÀ CONNECTION POOLING ==========
 def create_session():
@@ -42,9 +42,9 @@ _session = create_session()
 
 # Danh sach cac chat se nhan thong bao (ca nhan + nhom)
 CHAT_IDS = [
-#    -5027471114,  # Nhom: Bot Trailing XAU
+   -5027471114,  # Nhom: Bot Trailing XAU
     5638732845,   # Ca nhan: t
-    -1003467971094, # nhom scaping
+    # -1003467971094, # nhom scaping
 ]
 
 # Buffer de gom nhieu log lai gui 1 lan (tranh spam Telegram)
@@ -75,6 +75,21 @@ _bot_control = {
 }
 _control_lock = threading.Lock()
 _last_update_id = 0
+
+# ========== TRADE CONFIRMATION STATE ==========
+# Thoi gian cho xac nhan (8 phut = 480 giay)
+CONFIRMATION_TIMEOUT = 8 * 60
+
+_pending_confirmation = {
+    'active': False,          # Co dang cho xac nhan khong
+    'direction': None,        # 'buy' hoac 'sell'
+    'buy_score': 0,           # Diem buy tai thoi diem yeu cau
+    'sell_score': 0,          # Diem sell tai thoi diem yeu cau
+    'request_time': None,     # Thoi gian gui yeu cau (timestamp)
+    'confirmed': None,        # True = confirmed, False = cancelled, None = pending
+    'auto_confirmed': False,  # True neu la auto confirm sau 8 phut
+}
+_confirmation_lock = threading.Lock()
 
 def get_chat_id():
     """
@@ -345,6 +360,179 @@ def get_next_score_override():
         return buy, sell
 
 
+# ========== TRADE CONFIRMATION FUNCTIONS ==========
+
+def request_trade_confirmation(direction, buy_score, sell_score, buy_threshold, sell_threshold):
+    """
+    Gui yeu cau xac nhan trade len Telegram.
+    Bat dau timer 8 phut de auto-confirm.
+    
+    Args:
+        direction: 'buy' hoac 'sell'
+        buy_score: Diem buy hien tai
+        sell_score: Diem sell hien tai
+    
+    Returns: True neu da gui thanh cong
+    """
+    global _pending_confirmation
+    
+    with _confirmation_lock:
+        _pending_confirmation = {
+            'active': True,
+            'direction': direction,
+            'buy_score': buy_score,
+            'sell_score': sell_score,
+            'request_time': time.time(),
+            'confirmed': None,
+            'auto_confirmed': False,
+        }
+    
+    # Tao message xac nhan
+    emoji = "🟢" if direction == "buy" else "🔴"
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    
+    msg = f"{emoji} <b>XAC NHAN TRADE {direction.upper()}</b>\n"
+    msg += f"━━━━━━━━━━━━━━━━━\n"
+    msg += f"⏰ Thoi gian: {timestamp}\n"
+    msg += f"📊 Diem: Buy={buy_score}/{buy_threshold} | Sell={sell_score}/{sell_threshold}\n"
+    msg += f"━━━━━━━━━━━━━━━━━\n\n"
+    msg += f"⚡ <b>Reply trong 8 phut:</b>\n"
+    msg += f"   /confirm hoac /ok - Mo lenh\n"
+    msg += f"   /huy hoac /no - Khong trade\n\n"
+    msg += f"⏳ <i>Het 8 phut = Tu dong mo lenh</i>"
+    
+    print(f"[DEBUG] Sending confirmation request for {direction}")
+    
+    result = send_telegram(msg)
+    
+    if result:
+        print(f"[CONFIRM] Da gui yeu cau xac nhan {direction.upper()}")
+    else:
+        print(f"[CONFIRM] Loi gui yeu cau xac nhan")
+    
+    return result
+
+
+def check_confirmation_status():
+    """
+    Kiem tra trang thai xac nhan.
+    
+    Returns: 
+        - ('confirmed', direction) neu user da confirm hoac auto-confirm
+        - ('cancelled', direction) neu user da cancel
+        - ('pending', direction) neu dang cho
+        - (None, None) neu khong co pending
+    """
+    global _pending_confirmation
+    
+    with _confirmation_lock:
+        if not _pending_confirmation['active']:
+            return None, None
+        
+        direction = _pending_confirmation['direction']
+        
+        # Da co ket qua (confirm hoac cancel)
+        if _pending_confirmation['confirmed'] is True:
+            # Reset state
+            _pending_confirmation['active'] = False
+            auto = _pending_confirmation['auto_confirmed']
+            if auto:
+                print(f"[CONFIRM] Auto-confirmed {direction.upper()} sau 8 phut")
+            else:
+                print(f"[CONFIRM] User confirmed {direction.upper()}")
+            return 'confirmed', direction
+        
+        if _pending_confirmation['confirmed'] is False:
+            # Reset state
+            _pending_confirmation['active'] = False
+            print(f"[CONFIRM] User cancelled {direction.upper()}")
+            return 'cancelled', direction
+        
+        # Chua co phan hoi - kiem tra timeout
+        elapsed = time.time() - _pending_confirmation['request_time']
+        if elapsed >= CONFIRMATION_TIMEOUT:
+            # Het 8 phut -> Auto confirm
+            _pending_confirmation['confirmed'] = True
+            _pending_confirmation['auto_confirmed'] = True
+            _pending_confirmation['active'] = False
+            
+            # Gui thong bao auto confirm
+            msg = f"⏰ <b>AUTO CONFIRM</b>\n"
+            msg += f"Het 8 phut khong phan hoi.\n"
+            msg += f"Tu dong mo lenh {direction.upper()}!"
+            send_telegram(msg)
+            
+            print(f"[CONFIRM] Auto-confirmed {direction.upper()} sau 8 phut")
+            return 'confirmed', direction
+        
+        # Van dang cho
+        return 'pending', direction
+
+
+def is_confirmation_pending():
+    """Kiem tra co dang cho xac nhan khong"""
+    with _confirmation_lock:
+        return _pending_confirmation['active']
+
+
+def get_confirmation_remaining_time():
+    """Lay thoi gian con lai de xac nhan (giay)"""
+    with _confirmation_lock:
+        if not _pending_confirmation['active']:
+            return 0
+        elapsed = time.time() - _pending_confirmation['request_time']
+        remaining = CONFIRMATION_TIMEOUT - elapsed
+        return max(0, remaining)
+
+
+def cancel_pending_confirmation():
+    """Huy yeu cau xac nhan dang cho (dung khi /stop bot)"""
+    global _pending_confirmation
+    with _confirmation_lock:
+        if _pending_confirmation['active']:
+            _pending_confirmation['active'] = False
+            _pending_confirmation['confirmed'] = False
+            print("[CONFIRM] Pending confirmation cancelled")
+
+
+def _handle_confirm_command():
+    """Xu ly khi user gui /confirm"""
+    global _pending_confirmation
+    
+    print("[DEBUG] _handle_confirm_command() called")
+    
+    with _confirmation_lock:
+        print(f"[DEBUG] Confirmation state: active={_pending_confirmation['active']}, confirmed={_pending_confirmation['confirmed']}")
+        
+        if not _pending_confirmation['active']:
+            return "❌ Khong co lenh nao dang cho xac nhan."
+        
+        direction = _pending_confirmation['direction']
+        _pending_confirmation['confirmed'] = True
+        
+        print(f"[DEBUG] Set confirmed=True for {direction}")
+        return f"✅ Da xac nhan! Se mo lenh {direction.upper()} ngay."
+
+
+def _handle_cancel_confirmation_command():
+    """Xu ly khi user gui /cancel hoac /huy de huy confirmation"""
+    global _pending_confirmation
+    
+    print("[DEBUG] _handle_cancel_confirmation_command() called")
+    
+    with _confirmation_lock:
+        print(f"[DEBUG] Confirmation state: active={_pending_confirmation['active']}")
+        
+        if not _pending_confirmation['active']:
+            return None  # Khong co pending confirmation
+        
+        direction = _pending_confirmation['direction']
+        _pending_confirmation['confirmed'] = False
+        
+        print(f"[DEBUG] Set confirmed=False for {direction}")
+        return f"🚫 Da huy! Khong mo lenh {direction.upper()}."
+
+
 def close_all_positions():
     """
     Dong tat ca lenh dang mo va huy tat ca lenh pending.
@@ -611,8 +799,9 @@ def _handle_command(cmd, args, chat_id):
     global _bot_control
     
     if cmd in ['/stop', '/off', '/tat']:
-        # Tat bot, reset score
+        # Tat bot, reset score, huy pending confirmation
         set_bot_control(active=False, buy_active=False, sell_active=False, reset_score=True)
+        cancel_pending_confirmation()
         return "🔴 Bot da TAT. Score da reset ve 0."
     
     elif cmd in ['/stop_buy', '/tatbuy']:
@@ -874,7 +1063,20 @@ def _handle_command(cmd, args, chat_id):
         if ctrl['next_buy_score'] or ctrl['next_sell_score']:
             msg += f"\nDiem set cho cluster tiep:\n"
             msg += f"   Buy: {ctrl['next_buy_score'] or 'N/A'}\n"
-            msg += f"   Sell: {ctrl['next_sell_score'] or 'N/A'}"
+            msg += f"   Sell: {ctrl['next_sell_score'] or 'N/A'}\n"
+        
+        # Hien thi trang thai cho xac nhan
+        if is_confirmation_pending():
+            remaining = get_confirmation_remaining_time()
+            mins = int(remaining // 60)
+            secs = int(remaining % 60)
+            with _confirmation_lock:
+                direction = _pending_confirmation['direction']
+            msg += f"\n⏳ DANG CHO XAC NHAN\n"
+            msg += f"-------------------\n"
+            msg += f"Lenh: {direction.upper()}\n"
+            msg += f"Con lai: {mins}:{secs:02d}\n"
+            msg += f"/confirm hoac /huy"
         
         return msg
     
@@ -888,8 +1090,28 @@ def _handle_command(cmd, args, chat_id):
         result = close_positions_only()
         return result
     
+    elif cmd in ['/confirm', '/xacnhan', '/ok', '/yes', '/y']:
+        # Xac nhan trade dang cho
+        print(f"[CMD] Received confirm command: {cmd}")
+        result = _handle_confirm_command()
+        return result
+    
+    elif cmd in ['/huy', '/khong', '/no', '/n']:
+        # Huy confirmation dang cho
+        print(f"[CMD] Received cancel confirmation command: {cmd}")
+        result = _handle_cancel_confirmation_command()
+        if result:
+            return result
+        # Neu khong co pending confirmation, tra ve thong bao
+        return "❌ Khong co lenh nao dang cho xac nhan."
+    
     elif cmd in ['/cancelpending', '/huypending', '/cancel']:
-        # Chi huy pending orders
+        # Kiem tra co dang cho confirmation khong TRUOC
+        print(f"[CMD] Received cancel command: {cmd}")
+        cancel_result = _handle_cancel_confirmation_command()
+        if cancel_result:
+            return cancel_result
+        # Neu khong co pending confirmation, huy pending orders
         result = cancel_pending_only()
         return result
     
@@ -905,14 +1127,19 @@ Bat/Tat 1 chieu:
 /stop_buy, /start_buy
 /stop_sell, /start_sell
 
-Mo lenh ngay:
+Mo lenh ngay (khong can xac nhan):
 /buy - Mo Buy ngay
 /sell - Mo Sell ngay
+
+Xac nhan lenh (khi du diem):
+/confirm /ok /yes - Mo lenh
+/huy /no /cancel - Khong trade
+⏳ Het 8 phut = Tu dong mo
 
 Dong lenh:
 /closeall - Dong tat ca
 /closepos - Chi dong positions
-/cancelpending - Chi huy pending
+/cancel - Huy pending orders
 
 Cau hinh:
 /set buy=20 sell=15 (1 lan)
@@ -921,7 +1148,7 @@ Cau hinh:
 /risk 10 (= 10%)
 
 Xem trang thai:
-/status"""
+/status - Hien thi trang thai bot"""
         return msg
     
     return None  # Khong phai command
@@ -963,13 +1190,17 @@ def _poll_commands():
                         text = update["message"]["text"]
                         chat_id = update["message"]["chat"]["id"]
                         
+                        # Debug: log moi tin nhan nhan duoc
+                        print(f"[POLL] Received message: '{text}' from chat {chat_id}")
+                        
                         # Parse va xu ly command
                         cmd, args = _parse_command(text)
                         if cmd and cmd.startswith('/'):
+                            print(f"[POLL] Processing command: {cmd}")
                             response_msg = _handle_command(cmd, args, chat_id)
                             if response_msg:
                                 send_telegram(response_msg, chat_id)
-                                print(f"[CMD] {cmd} -> {response_msg[:50]}...")
+                                print(f"[CMD] {cmd} -> Sent response ({len(response_msg)} chars)")
         
         except requests.exceptions.Timeout:
             # Timeout là bình thường với long polling, không cần báo lỗi

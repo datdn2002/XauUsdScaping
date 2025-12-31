@@ -7,7 +7,7 @@ from telegram_bot import (
     get_bot_control, set_bot_control, check_force_trade, check_reset_score, get_next_score_override,
     check_should_reset_bot, update_accumulated_score
 )
-from be_manager import check_be
+from be_manager import check_be, reset_be_manager
 
 SYMBOL = "XAUUSD"
 TIMEFRAME = mt5.TIMEFRAME_H1
@@ -88,8 +88,8 @@ while True:
         time.sleep(5)
         continue  # Khong break, cho phep bat lai tu Telegram
     
-    # Kiem tra va keo BE neu can
-    # check_be()  # TAT BE MANAGER
+    # Kiem tra va keo BE neu can (ET3 chot TP -> SL ET4 = Entry +- 2.5)
+    check_be()
     
     # Kiem tra cluster vua dong -> mo lenh ngay neu du diem
     cluster_open_now = is_cluster_open(SYMBOL)
@@ -105,8 +105,9 @@ while True:
         # Kiem tra ket qua cluster (loi/lo) va ghi nhan SL neu can
         check_cluster_result_and_record(SYMBOL)
         
-        # Reset thong tin cluster
+        # Reset thong tin cluster va BE manager
         reset_cluster_info()
+        reset_be_manager()
         log("[INFO] Kiem tra mo lenh moi...")
         
         # Kiem tra co du diem khong
@@ -179,7 +180,9 @@ while True:
             log(">>> RESET SCORE <<<")
             accumulated_score = Signal()
             update_accumulated_score(0, 0, buy_threshold, sell_threshold)
-            flush_logs()
+        
+        # Gui log len Telegram sau moi lan phan tich nen
+        flush_logs()
 
     time.sleep(2)
 

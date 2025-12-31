@@ -8,7 +8,8 @@ import json
 import MetaTrader5 as mt5
 
 # Telegram Bot Configuration
-BOT_TOKEN = "8388937091:AAFRyeKoIGeUnVxtoSskxhRc_pCS9I5QBCg"
+# BOT_TOKEN = "8388937091:AAFRyeKoIGeUnVxtoSskxhRc_pCS9I5QBCg"
+BOT_TOKEN = "8429353540:AAGNIPh-Lje4KAl_Ko57OS8TBWfgzpgaJWM"
 
 # ========== SESSION VỚI RETRY VÀ CONNECTION POOLING ==========
 def create_session():
@@ -36,15 +37,14 @@ def create_session():
 
 # Session toàn cục
 _session = create_session()
-# BOT_TOKEN = "8429353540:AAGNIPh-Lje4KAl_Ko57OS8TBWfgzpgaJWM"
 
 
 
 # Danh sach cac chat se nhan thong bao (ca nhan + nhom)
 CHAT_IDS = [
-   -5027471114,  # Nhom: Bot Trailing XAU
+#    -5027471114,  # Nhom: Bot Trailing XAU
     5638732845,   # Ca nhan: t
-    # -1003467971094, # nhom scaping
+    -1003467971094, # nhom scaping
 ]
 
 # Buffer de gom nhieu log lai gui 1 lan (tranh spam Telegram)
@@ -130,6 +130,13 @@ def send_telegram(message, chat_id=None):
             response = _session.post(url, json=payload, timeout=15)
             if response.status_code == 200:
                 success = True
+            else:
+                # Log lỗi từ Telegram API
+                try:
+                    error_data = response.json()
+                    print(f"[TELE] API Error {target}: {response.status_code} - {error_data.get('description', 'Unknown')}")
+                except:
+                    print(f"[TELE] API Error {target}: {response.status_code}")
         except requests.exceptions.Timeout:
             print(f"[TELE] Send timeout to {target}, will retry...")
         except requests.exceptions.ConnectionError:
@@ -140,35 +147,60 @@ def send_telegram(message, chat_id=None):
     return success
 
 
+def _escape_html(text):
+    """Escape HTML special characters for Telegram."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _flush_buffer():
     """Gửi tất cả log trong buffer lên Telegram."""
     global _log_buffer, _last_send_time
     
+    message = ""
+    msg_count = 0
     with _buffer_lock:
         if not _log_buffer:
             return
         
         # Gom tất cả log thành 1 message
         message = "\n".join(_log_buffer)
+        msg_count = len(_log_buffer)
         _log_buffer = []
         _last_send_time = time.time()
     
     # Gửi lên Telegram (không block)
     if message.strip():
-        send_telegram(f"<pre>{message}</pre>")
+        # Escape HTML special characters (quan trọng!)
+        message = _escape_html(message)
+        
+        # Telegram có giới hạn 4096 ký tự
+        if len(message) > 4000:
+            message = message[:4000] + "\n... (truncated)"
+        
+        print(f"[DEBUG] Sending {msg_count} logs ({len(message)} chars) to Telegram...")
+        result = send_telegram(f"<pre>{message}</pre>")
+        if result:
+            print(f"[DEBUG] Sent OK!")
+        else:
+            print(f"[TELE] Failed to send {msg_count} log messages")
 
 
 def _buffer_sender():
     """Thread gửi buffer định kỳ."""
     global _last_send_time
     while True:
-        time.sleep(1)
-        with _buffer_lock:
-            if _log_buffer and (time.time() - _last_send_time) >= BUFFER_DELAY:
-                pass  # Will flush below
-            else:
-                continue
-        _flush_buffer()
+        try:
+            time.sleep(1)
+            should_flush = False
+            with _buffer_lock:
+                if _log_buffer and (time.time() - _last_send_time) >= BUFFER_DELAY:
+                    should_flush = True
+            
+            if should_flush:
+                _flush_buffer()
+        except Exception as e:
+            print(f"[TELE] Buffer sender error: {e}")
+            time.sleep(5)  # Chờ 5s nếu có lỗi
 
 
 # Start buffer sender thread
@@ -191,6 +223,11 @@ def log(*args, flush_now=False, **kwargs):
     # Thêm vào buffer để gửi Telegram
     with _buffer_lock:
         _log_buffer.append(message)
+        buffer_size = len(_log_buffer)
+    
+    # Debug: hiển thị buffer size mỗi 5 tin nhắn
+    if buffer_size % 5 == 0:
+        print(f"[DEBUG] Buffer size: {buffer_size}")
     
     # Nếu cần gửi ngay (ví dụ: khi có lệnh trade)
     if flush_now:
@@ -199,6 +236,10 @@ def log(*args, flush_now=False, **kwargs):
 
 def flush_logs():
     """Gửi ngay tất cả log đang đợi trong buffer."""
+    with _buffer_lock:
+        buffer_count = len(_log_buffer)
+    if buffer_count > 0:
+        print(f"[DEBUG] flush_logs() called with {buffer_count} messages in buffer")
     _flush_buffer()
 
 
@@ -399,8 +440,10 @@ def close_all_positions():
         is_profit = total_profit > 0
         record_cluster_result(direction, is_profit, total_profit)
     
-    # Reset cluster info sau khi dong het
+    # Reset cluster info va BE manager sau khi dong het
     reset_cluster_info()
+    from be_manager import reset_be_manager
+    reset_be_manager()
     
     msg = f"DA DONG TAT CA LENH\n"
     msg += f"-------------------\n"
@@ -486,6 +529,8 @@ def close_positions_only():
     orders = mt5.orders_get(symbol=symbol)
     if not orders:
         reset_cluster_info()
+        from be_manager import reset_be_manager
+        reset_be_manager()
     
     msg = f"DA DONG POSITIONS\n"
     msg += f"-------------------\n"
@@ -529,6 +574,8 @@ def cancel_pending_only():
     positions = mt5.positions_get(symbol=symbol)
     if not positions:
         reset_cluster_info()
+        from be_manager import reset_be_manager
+        reset_be_manager()
     
     msg = f"DA HUY PENDING ORDERS\n"
     msg += f"-------------------\n"

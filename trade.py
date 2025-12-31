@@ -496,14 +496,14 @@ class TradeManager:
         self.risk_percent = ctrl.get('risk_percent', 0.10)  # Mac dinh 10%
         
         # Khoang cach USD cho ET2, ET3, ET4
-        self.et_offsets_usd = [0, 0.5, 1, 1.5]
+        self.et_offsets_usd = [0, 1, 1.5, 2.5]
         
         # SL/TP cho tung ET (USD)
-        self.sl_usd = [9, 10, 11, 12]
-        self.tp_usd = [3, 5, 7, 11]
-        
-        # Phan bo risk: 20%, 20%, 40%, 20%
-        self.risk_allocation = [0.20, 0.20, 0.40, 0.20]
+        self.sl_usd = [8, 9, 9.5, 10.5]
+        self.tp_usd = [4, 4.5, 6.5, 9.5]
+
+        # Phan bo risk: 30%, 20%, 30%, 20%
+        self.risk_allocation = [0.3, 0.20, 0.3, 0.20]
         
     def get_symbol_info(self):
         symbol_info = mt5.symbol_info(self.symbol)

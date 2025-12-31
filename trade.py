@@ -495,15 +495,19 @@ class TradeManager:
         ctrl = get_bot_control()
         self.risk_percent = ctrl.get('risk_percent', 0.10)  # Mac dinh 10%
         
-        # Khoang cach USD cho ET2, ET3, ET4
+        # Khoang cach USD cho ET2, ET3, ET4 (tinh tu X)
+        # ET1=X, ET2=X+1, ET3=X+1.5, ET4=X+2.5
         self.et_offsets_usd = [0, 1, 1.5, 2.5]
         
-        # SL/TP cho tung ET (USD)
-        self.sl_usd = [8, 9, 9.5, 10.5]
-        self.tp_usd = [4, 4.5, 6.5, 9.5]
+        # SL/TP cho tung ET (USD) - TINH TU X (gia ET1), KHONG PHAI TU ENTRY CUA TUNG ET
+        # SL: X+8, X+10, X+11, X+12 (cho SELL) hoac X-8, X-10, X-11, X-12 (cho BUY)
+        # TP: X-4, X-5.5, X-8, X-11 (cho SELL) hoac X+4, X+5.5, X+8, X+11 (cho BUY)
+        self.sl_from_x = [8, 10, 11, 12]
+        self.tp_from_x = [4, 5.5, 8, 11]
 
-        # Phan bo risk: 30%, 20%, 30%, 20%
-        self.risk_allocation = [0.3, 0.20, 0.3, 0.20]
+        # Phan bo risk: 38%, 22%, 32%, 21% (theo bang)
+        # Luu y: dung SL[i] de tinh lot, nen can tinh sl_distance cho tung ET
+        self.risk_allocation = [0.3, 0.20, 0.30, 0.2]
         
     def get_symbol_info(self):
         symbol_info = mt5.symbol_info(self.symbol)
@@ -525,16 +529,23 @@ class TradeManager:
         total_risk = self.initial_nav * self.risk_percent
         usd_per_lot = 100
         
+        # Tinh SL distance thuc te cho tung ET (tu X den SL)
+        # Vi ET[i] entry = X + offset[i], va SL = X + sl_from_x[i]
+        # => SL distance tu entry = sl_from_x[i] - offset[i] (cho SELL)
+        # Nhung de don gian, dung sl_from_x truc tiep vi no la khoang cach tu X
+        
         lots = []
         total_actual_risk = 0
         
         for i in range(4):
             allocated_risk = total_risk * self.risk_allocation[i]
-            raw_lot = allocated_risk / (self.sl_usd[i] * usd_per_lot)
+            # Dung sl_from_x de tinh risk (khoang cach tu X den SL)
+            sl_distance = self.sl_from_x[i]
+            raw_lot = allocated_risk / (sl_distance * usd_per_lot)
             lot = max(min_lot, round(raw_lot / lot_step) * lot_step)
             lots.append(lot)
             
-            actual_risk = lot * self.sl_usd[i] * usd_per_lot
+            actual_risk = lot * sl_distance * usd_per_lot
             total_actual_risk += actual_risk
         
         log(f"  Risk NAV = ${total_risk:.2f}")
@@ -546,6 +557,14 @@ class TradeManager:
     def open_buy_cluster(self):
         """
         Mo cluster BUY.
+        SL/TP tinh tu X (gia ET1), khong phai tu entry cua tung ET.
+        
+        BUY: X = Ask
+        - ET1 @ X (market), SL = X-8, TP = X+4
+        - ET2 @ Bid-1 (limit), SL = X-10, TP = X+5.5
+        - ET3 @ Bid-1.5 (limit), SL = X-11, TP = X+8
+        - ET4 @ Bid-2.5 (limit), SL = X-12, TP = X+11
+        
         Returns: (entry_price_et1, tp4_price)
         """
         global _cluster_tickets
@@ -565,13 +584,13 @@ class TradeManager:
         
         log(f"BUY Cluster @ Ask={price_ask}, Bid={price_bid}")
         
-        entry_price_et1 = price_ask
+        # X = gia co so (ET1 entry) - dung de tinh SL/TP cho tat ca ET
+        X = price_ask
+        entry_price_et1 = X
         
-        # TP4 tinh tu ET1 (market order) voi khoang cach xa nhat
-        # BUY: TP cao hon entry, nen TP4 = ask + max(tp_usd)
-        max_tp_distance = max(self.tp_usd)
-        tp4_price = round(price_ask + max_tp_distance, 2)
-        log(f"  TP4 (furthest target) = {tp4_price}")
+        # TP4 = X + tp_from_x[3] (xa nhat)
+        tp4_price = round(X + self.tp_from_x[3], 2)
+        log(f"  X (base) = {X}, TP4 = {tp4_price}")
         
         # Luu thoi gian mo cluster
         _cluster_tickets['open_time'] = datetime.now()
@@ -579,20 +598,21 @@ class TradeManager:
         for i in range(4):
             lot = lots[i]
             offset = self.et_offsets_usd[i]
-            sl_distance = max(self.sl_usd[i], min_distance + 0.1)
-            tp_distance = max(self.tp_usd[i], min_distance + 0.1)
             
+            # Entry price
             if i == 0:
-                entry_price = price_ask
+                entry_price = X  # Market order @ Ask
                 order_type = mt5.ORDER_TYPE_BUY
                 action = mt5.TRADE_ACTION_DEAL
             else:
-                entry_price = round(price_bid - offset, 2)
+                entry_price = round(price_bid - offset, 2)  # Limit order duoi Bid
                 order_type = mt5.ORDER_TYPE_BUY_LIMIT
                 action = mt5.TRADE_ACTION_PENDING
             
-            sl = round(entry_price - sl_distance, 2)
-            tp = round(entry_price + tp_distance, 2)
+            # SL va TP tinh tu X, khong phai tu entry_price
+            # BUY: SL duoi X, TP tren X
+            sl = round(X - self.sl_from_x[i], 2)
+            tp = round(X + self.tp_from_x[i], 2)
             
             request = {
                 "action": action,
@@ -615,11 +635,9 @@ class TradeManager:
             et_key = f"et{i+1}"
             
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                # Market order - luu deal ticket (position)
                 _cluster_tickets[et_key] = result.deal if result.deal else result.order
                 log(f"  [OK] ET{i+1} ({order_type_str}): {lot} lots @ {entry_price} | SL={sl}, TP={tp} | Ticket #{_cluster_tickets[et_key]}")
             elif result and result.retcode == mt5.TRADE_RETCODE_PLACED:
-                # Pending order - luu order ticket
                 _cluster_tickets[et_key] = result.order
                 log(f"  [OK] ET{i+1} ({order_type_str}): Pending {lot} lots @ {entry_price} | SL={sl}, TP={tp} | Order #{result.order}")
             else:
@@ -632,6 +650,14 @@ class TradeManager:
     def open_sell_cluster(self):
         """
         Mo cluster SELL.
+        SL/TP tinh tu X (gia ET1), khong phai tu entry cua tung ET.
+        
+        SELL: X = Bid
+        - ET1 @ X (market), SL = X+8, TP = X-4
+        - ET2 @ Ask+1 (limit), SL = X+10, TP = X-5.5
+        - ET3 @ Ask+1.5 (limit), SL = X+11, TP = X-8
+        - ET4 @ Ask+2.5 (limit), SL = X+12, TP = X-11
+        
         Returns: (entry_price_et1, tp4_price)
         """
         global _cluster_tickets
@@ -651,13 +677,13 @@ class TradeManager:
         
         log(f"SELL Cluster @ Bid={price_bid}, Ask={price_ask}")
         
-        entry_price_et1 = price_bid
+        # X = gia co so (ET1 entry) - dung de tinh SL/TP cho tat ca ET
+        X = price_bid
+        entry_price_et1 = X
         
-        # TP4 tinh tu ET1 (market order) voi khoang cach xa nhat
-        # SELL: TP thap hon entry, nen TP4 = bid - max(tp_usd)
-        max_tp_distance = max(self.tp_usd)
-        tp4_price = round(price_bid - max_tp_distance, 2)
-        log(f"  TP4 (furthest target) = {tp4_price}")
+        # TP4 = X - tp_from_x[3] (xa nhat)
+        tp4_price = round(X - self.tp_from_x[3], 2)
+        log(f"  X (base) = {X}, TP4 = {tp4_price}")
         
         # Luu thoi gian mo cluster
         _cluster_tickets['open_time'] = datetime.now()
@@ -665,20 +691,21 @@ class TradeManager:
         for i in range(4):
             lot = lots[i]
             offset = self.et_offsets_usd[i]
-            sl_distance = max(self.sl_usd[i], min_distance + 0.1)
-            tp_distance = max(self.tp_usd[i], min_distance + 0.1)
             
+            # Entry price
             if i == 0:
-                entry_price = price_bid
+                entry_price = X  # Market order @ Bid
                 order_type = mt5.ORDER_TYPE_SELL
                 action = mt5.TRADE_ACTION_DEAL
             else:
-                entry_price = round(price_ask + offset, 2)
+                entry_price = round(price_ask + offset, 2)  # Limit order tren Ask
                 order_type = mt5.ORDER_TYPE_SELL_LIMIT
                 action = mt5.TRADE_ACTION_PENDING
             
-            sl = round(entry_price + sl_distance, 2)
-            tp = round(entry_price - tp_distance, 2)
+            # SL va TP tinh tu X, khong phai tu entry_price
+            # SELL: SL tren X, TP duoi X
+            sl = round(X + self.sl_from_x[i], 2)
+            tp = round(X - self.tp_from_x[i], 2)
             
             request = {
                 "action": action,
@@ -701,11 +728,9 @@ class TradeManager:
             et_key = f"et{i+1}"
             
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                # Market order - luu deal ticket (position)
                 _cluster_tickets[et_key] = result.deal if result.deal else result.order
                 log(f"  [OK] ET{i+1} ({order_type_str}): {lot} lots @ {entry_price} | SL={sl}, TP={tp} | Ticket #{_cluster_tickets[et_key]}")
             elif result and result.retcode == mt5.TRADE_RETCODE_PLACED:
-                # Pending order - luu order ticket
                 _cluster_tickets[et_key] = result.order
                 log(f"  [OK] ET{i+1} ({order_type_str}): Pending {lot} lots @ {entry_price} | SL={sl}, TP={tp} | Order #{result.order}")
             else:

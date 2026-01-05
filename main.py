@@ -5,10 +5,7 @@ from trade import process_trade, is_bot_stopped, is_cluster_open, check_and_canc
 from telegram_bot import (
     log, flush_logs, 
     get_bot_control, set_bot_control, check_force_trade, check_reset_score, get_next_score_override,
-    check_should_reset_bot, update_accumulated_score,
-    # Trade confirmation
-    request_trade_confirmation, check_confirmation_status, is_confirmation_pending,
-    cancel_pending_confirmation
+    check_should_reset_bot, update_accumulated_score
 )
 from be_manager import check_be, reset_be_manager
 
@@ -39,7 +36,6 @@ last_candle = None
 accumulated_score = Signal()
 was_cluster_open = False  # Theo doi trang thai cluster
 bot_stopped_logged = False  # Tranh spam log khi bot dung
-pending_trade_direction = None  # Luu huong trade dang cho xac nhan
 
 while True:
     # ========== KIEM TRA COMMANDS TU TELEGRAM ==========
@@ -79,37 +75,6 @@ while True:
         accumulated_score.sell_score = override_sell
         log(f"[CMD] Set diem Sell = {override_sell}")
     
-    # ========== KIEM TRA TRANG THAI XAC NHAN ==========
-    
-    # Kiem tra xac nhan trade dang cho
-    if is_confirmation_pending():
-        status, direction = check_confirmation_status()
-        
-        if status == 'confirmed':
-            # User da confirm hoac auto-confirm sau 8 phut -> Mo lenh
-            log(f"[CONFIRM] Da xac nhan - Mo {direction.upper()}!")
-            if not is_cluster_open(SYMBOL):
-                force_open_cluster(SYMBOL, direction)
-                # Reset score sau khi mo lenh
-                log(">>> RESET SCORE <<<")
-                accumulated_score = Signal()
-                update_accumulated_score(0, 0, buy_threshold, sell_threshold)
-            else:
-                log(f"[CONFIRM] Cluster dang mo - khong the mo them")
-            pending_trade_direction = None
-            flush_logs()
-        
-        elif status == 'cancelled':
-            # User da cancel -> Khong trade, reset score
-            log(f"[CONFIRM] Da huy - Khong mo {direction.upper()}")
-            log(">>> RESET SCORE <<<")
-            accumulated_score = Signal()
-            update_accumulated_score(0, 0, buy_threshold, sell_threshold)
-            pending_trade_direction = None
-            flush_logs()
-        
-        # Neu status == 'pending' thi tiep tuc cho
-    
     # ========== KIEM TRA BOT DUNG ==========
     
     # Kiem tra bot co bi dung khong (3 lenh lien tiep hoac tu Telegram)
@@ -145,37 +110,18 @@ while True:
         reset_be_manager()
         log("[INFO] Kiem tra mo lenh moi...")
         
-        # Kiem tra co du diem khong (va chua co pending confirmation)
-        if not is_confirmation_pending():
-            buy_diff = accumulated_score.buy_score - buy_threshold
-            sell_diff = accumulated_score.sell_score - sell_threshold
-            
-            if buy_diff >= 0 or sell_diff >= 0:
-                log(f"[INFO] Du diem! Buy={accumulated_score.buy_score}/{buy_threshold}, Sell={accumulated_score.sell_score}/{sell_threshold}")
-                
-                # Xac dinh huong trade (chieu co diem cao hon)
-                # Kiem tra chieu nao dang active
-                can_buy = bot_ctrl.get('buy_active', True) and buy_diff >= 0
-                can_sell = bot_ctrl.get('sell_active', True) and sell_diff >= 0
-                
-                if can_buy and (not can_sell or buy_diff >= sell_diff):
-                    pending_trade_direction = 'buy'
-                elif can_sell:
-                    pending_trade_direction = 'sell'
-                else:
-                    pending_trade_direction = None
-                
-                if pending_trade_direction:
-                    # Gui yeu cau xac nhan qua Telegram
-                    log(f"[INFO] Gui yeu cau xac nhan {pending_trade_direction.upper()}...")
-                    request_trade_confirmation(
-                        pending_trade_direction,
-                        accumulated_score.buy_score,
-                        accumulated_score.sell_score,
-                        buy_threshold,
-                        sell_threshold
-                    )
-                    flush_logs()
+        # Kiem tra co du diem khong
+        buy_diff = accumulated_score.buy_score - buy_threshold
+        sell_diff = accumulated_score.sell_score - sell_threshold
+        
+        if buy_diff >= 0 or sell_diff >= 0:
+            log(f"[INFO] Du diem! Buy={accumulated_score.buy_score}/{buy_threshold}, Sell={accumulated_score.sell_score}/{sell_threshold}")
+            trade_executed, should_reset = process_trade(SYMBOL, accumulated_score, buy_threshold, sell_threshold, bot_ctrl)
+            if should_reset:
+                log(">>> RESET SCORE <<<")
+                accumulated_score = Signal()
+                update_accumulated_score(0, 0, buy_threshold, sell_threshold)
+            flush_logs()
     
     was_cluster_open = cluster_open_now
     
@@ -227,35 +173,14 @@ while True:
                 status.append("Sell: OFF")
             log(f"[INFO] {' | '.join(status)}")
 
-        # Kiem tra du diem va gui yeu cau xac nhan (neu chua co pending)
-        if not is_cluster_open(SYMBOL) and not is_confirmation_pending():
-            buy_diff = accumulated_score.buy_score - buy_threshold
-            sell_diff = accumulated_score.sell_score - sell_threshold
-            
-            if buy_diff >= 0 or sell_diff >= 0:
-                log(f"[INFO] Du diem! Kiem tra chieu trade...")
-                
-                # Xac dinh huong trade (chieu co diem cao hon va dang active)
-                can_buy = bot_ctrl.get('buy_active', True) and buy_diff >= 0
-                can_sell = bot_ctrl.get('sell_active', True) and sell_diff >= 0
-                
-                if can_buy and (not can_sell or buy_diff >= sell_diff):
-                    pending_trade_direction = 'buy'
-                elif can_sell:
-                    pending_trade_direction = 'sell'
-                else:
-                    pending_trade_direction = None
-                
-                if pending_trade_direction:
-                    # Gui yeu cau xac nhan qua Telegram
-                    log(f"[CONFIRM] Gui yeu cau xac nhan {pending_trade_direction.upper()}...")
-                    request_trade_confirmation(
-                        pending_trade_direction,
-                        accumulated_score.buy_score,
-                        accumulated_score.sell_score,
-                        buy_threshold,
-                        sell_threshold
-                    )
+        # Process trade - tra ve (trade_executed, should_reset)
+        trade_executed, should_reset = process_trade(SYMBOL, accumulated_score, buy_threshold, sell_threshold, bot_ctrl)
+        
+        # Reset score neu can
+        if should_reset:
+            log(">>> RESET SCORE <<<")
+            accumulated_score = Signal()
+            update_accumulated_score(0, 0, buy_threshold, sell_threshold)
         
         # Gui log len Telegram sau moi lan phan tich nen
         flush_logs()
